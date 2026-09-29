@@ -238,7 +238,7 @@ a{{color:#7db7ff}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color
 <tr><td>Aircraft without position</td><td>{s['aircraft_without_position']}</td></tr><tr><td>Consecutive failures</td><td>{s['consecutive_failures']}</td></tr>
 <tr><td>Successful polls</td><td>{s['successful_polls']}</td></tr><tr><td>Failed polls</td><td>{s['failed_polls']}</td></tr>
 <tr><td>HTTP requests served</td><td>{s['requests_served']}</td></tr><tr><td>Uptime</td><td>{s['uptime_seconds']} sec</td></tr></table>
-<h2>Endpoints</h2><p><a href=\"/data/aircraft.json\">/data/aircraft.json</a><br><a href=\"/aircraft.json\">/aircraft.json</a><br><a href=\"/status\">/status</a><br><a href=\"/health\">/health</a></p>
+<h2>Endpoints</h2><p><a href=\"data/aircraft.json\">/data/aircraft.json</a><br><a href=\"aircraft.json\">/aircraft.json</a><br><a href=\"status\">/status</a><br><a href=\"health\">/health</a></p>
 <p><small>This page refreshes every 5 seconds.</small></p></body></html>"""
             self.send_html(html)
             return

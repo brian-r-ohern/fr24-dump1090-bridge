@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+- Adds Home Assistant Ingress support for the human-readable bridge status page.
+- Adds an optional Home Assistant sidebar panel through the app's **Show in sidebar** setting.
+- Makes status-page endpoint links relative so they continue to work through the Ingress path.
+- Keeps port `8085` unpublished to the LAN by default.
+
 ## 0.1.0
 
 - Initial HAOS app package based on the tested FR24-to-dump1090 Python service.
