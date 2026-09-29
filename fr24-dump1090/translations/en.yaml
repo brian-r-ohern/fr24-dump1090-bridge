@@ -1,0 +1,21 @@
+configuration:
+  receiver_host:
+    name: FR24 receiver host
+    description: IP address or hostname of the local Flightradar24 receiver.
+  receiver_port:
+    name: FR24 receiver port
+    description: HTTP port used by the receiver (normally 80).
+  username:
+    name: Receiver username
+    description: Username used for HTTP Digest authentication.
+  password:
+    name: Receiver password
+    description: Password used for HTTP Digest authentication.
+  poll_interval:
+    name: Poll interval
+    description: Seconds between successful receiver polls.
+  request_timeout:
+    name: Request timeout
+    description: Maximum seconds to wait for each HTTP request attempt.
+network:
+  8085/tcp: FR24 dump1090/readsb-compatible HTTP service

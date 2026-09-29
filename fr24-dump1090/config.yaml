@@ -1,0 +1,27 @@
+name: "FR24 dump1090 Bridge"
+version: "0.1.0"
+slug: "fr24_dump1090"
+description: >-
+  Converts a local Flightradar24 receiver flights.js feed into
+  dump1090/readsb-compatible aircraft.json endpoints.
+url: "https://github.com/brian-r-ohern/fr24-dump1090-bridge"
+arch:
+  - amd64
+startup: services
+boot: auto
+init: false
+ports:
+  8085/tcp: null
+ports_description:
+  8085/tcp: "FR24 dump1090 bridge HTTP service (optional LAN exposure)"
+options:
+  receiver_port: 80
+  poll_interval: 2
+  request_timeout: 3
+schema:
+  receiver_host: str
+  receiver_port: port
+  username: str
+  password: password
+  poll_interval: "int(1,60)"
+  request_timeout: "int(1,30)"
