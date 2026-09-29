@@ -30,7 +30,29 @@ The service listens on container port `8085`. It is not exposed to the LAN by de
 
 The bridge is intended to work as a source for consumers that accept dump1090/readsb-style `aircraft.json`, including the Home Assistant ADSB Aircraft Tracker integration.
 
-Home Assistant generates the internal app hostname from the repository identifier and app slug. Because a GitHub-installed app does **not** use the `local-` prefix used by a local development installation, do not assume `local-fr24-dump1090` after moving to the repository version. See the app documentation for ways to determine or expose the service address.
+Home Assistant generates the internal app hostname from the repository identifier and app slug. 
+
+### Finding the Home Assistant App hostname
+
+When another Home Assistant integration needs to connect to the bridge, use the
+**Hostname** shown on the FR24 dump1090 Bridge **Info** page together with port
+`8085`.
+
+Open **Settings → Apps → FR24 dump1090 Bridge → Info**. The hostname appears
+under **Controls → Hostname**.
+
+The hostname shown below is an example. Your installation may use a different
+hostname.
+
+![FR24 dump1090 Bridge hostname in Home Assistant](docs/images/home-assistant-app-hostname.png)
+
+Configure the consuming integration with:
+
+- **Host:** the hostname shown by Home Assistant
+- **Port:** `8085`
+
+For consumers that require a complete URL, the dump1090/readsb-compatible
+aircraft endpoint is `/data/aircraft.json`.
 
 ## Mapping philosophy
 
