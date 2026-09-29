@@ -1,21 +1,27 @@
 configuration:
+  source:
+    name: Input source
+    description: Use the receiver's SBS/BaseStation TCP feed (recommended) or the local flights.js web feed.
   receiver_host:
     name: FR24 receiver host
     description: IP address or hostname of the local Flightradar24 receiver.
+  sbs_port:
+    name: SBS/BaseStation port
+    description: TCP port for the receiver's local SBS/BaseStation feed (normally 30003).
   receiver_port:
-    name: FR24 receiver port
-    description: HTTP port used by the receiver (normally 80).
+    name: FR24 HTTP port
+    description: HTTP port used by flights.js mode (normally 80).
   username:
     name: Receiver username
-    description: Username used for HTTP Digest authentication.
+    description: Username for HTTP Digest authentication; required only for flights.js mode.
   password:
     name: Receiver password
-    description: Password used for HTTP Digest authentication.
+    description: Password for HTTP Digest authentication; required only for flights.js mode.
   poll_interval:
-    name: Poll interval
-    description: Seconds between successful receiver polls.
+    name: flights.js poll interval
+    description: Seconds between receiver polls when using flights.js mode.
   request_timeout:
-    name: Request timeout
-    description: Maximum seconds to wait for each HTTP request attempt.
+    name: HTTP request timeout
+    description: Maximum seconds to wait for each HTTP request attempt in flights.js mode.
 network:
   8085/tcp: FR24 dump1090/readsb-compatible HTTP service

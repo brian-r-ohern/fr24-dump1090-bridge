@@ -1,20 +1,35 @@
 # FR24 dump1090 Bridge for Home Assistant
 
-A Home Assistant App that converts the already-decoded aircraft data exposed by a local Flightradar24 receiver into conservative dump1090/readsb-compatible `aircraft.json` endpoints.
+A Home Assistant App that converts already-decoded aircraft data exposed locally by a Flightradar24 receiver into conservative dump1090/readsb-compatible `aircraft.json` endpoints.
 
-The bridge does **not** decode ADS-B RF data and does not replace the FR24 receiver. It polls the receiver's authenticated `/flights.js` endpoint and republishes the supported aircraft fields in a form that dump1090/readsb consumers can use.
+The recommended/default input is the receiver's **SBS/BaseStation TCP feed on port 30003**. The receiver's authenticated `/flights.js` web feed remains available as an alternate source. The bridge does **not** decode ADS-B RF data, does not replace the FR24 receiver, and does not interact with or modify the receiver's normal FR24 uplink.
 
 ## Home Assistant installation
 
 1. In Home Assistant, open **Settings → Apps → Install app**.
-2. Open the repository menu and add:
-   `https://github.com/brian-r-ohern/fr24-dump1090-bridge`
+2. Open the repository menu and add: `https://github.com/brian-r-ohern/fr24-dump1090-bridge`
 3. Refresh/reload the App Store if necessary.
 4. Install **FR24 dump1090 Bridge**.
-5. Configure the FR24 receiver host, port, username, and password.
+5. Enter the FR24 receiver host. Leave **SBS/BaseStation (`sbs_30003`)** selected for the recommended configuration.
 6. Start the app and enable **Start on boot** after confirming operation.
 
+For the alternate `flights_js` source, also configure the receiver HTTP port, username, and password.
+
 The app currently supports `amd64` Home Assistant systems.
+
+## Input sources
+
+### SBS/BaseStation — recommended/default
+
+The bridge connects continuously to the receiver's local TCP port `30003`. SBS messages update an in-memory state table keyed by ICAO address. The input stream is consumed at full rate; it is not throttled.
+
+Once per second the bridge publishes a consolidated snapshot with one record per active aircraft. Different SBS messages can therefore contribute callsign, position, altitude, speed, track, vertical rate, squawk, and on-ground state to the same aircraft record.
+
+### flights.js — alternate
+
+The original v0.1.x path remains available. It polls the receiver's authenticated `/flights.js` endpoint and conservatively translates the aircraft-state snapshot.
+
+Source selection is explicit. v0.2.0 does not automatically fail over between SBS and flights.js.
 
 ## Endpoints
 
@@ -32,19 +47,13 @@ The human-readable status page is also available through Home Assistant Ingress.
 
 The bridge is intended to work as a source for consumers that accept dump1090/readsb-style `aircraft.json`, including the Home Assistant ADSB Aircraft Tracker integration.
 
-Home Assistant generates the internal app hostname from the repository identifier and app slug. 
-
 ### Finding the Home Assistant App hostname
 
-When another Home Assistant integration needs to connect to the bridge, use the
-**Hostname** shown on the FR24 dump1090 Bridge **Info** page together with port
-`8085`.
+When another Home Assistant integration needs to connect to the bridge, use the **Hostname** shown on the FR24 dump1090 Bridge **Info** page together with port `8085`.
 
-Open **Settings → Apps → FR24 dump1090 Bridge → Info**. The hostname appears
-under **Controls → Hostname**.
+Open **Settings → Apps → FR24 dump1090 Bridge → Info**. The hostname appears under **Controls → Hostname**.
 
-The hostname shown below is an example. Your installation may use a different
-hostname.
+The hostname shown below is an example. Your installation may use a different hostname.
 
 ![FR24 dump1090 Bridge hostname in Home Assistant](docs/images/home-assistant-app-hostname.png)
 
@@ -53,36 +62,25 @@ Configure the consuming integration with:
 - **Host:** the hostname shown by Home Assistant
 - **Port:** `8085`
 
-For consumers that require a complete URL, the dump1090/readsb-compatible
-aircraft endpoint is `/data/aircraft.json`.
+For consumers that require a complete URL, the dump1090/readsb-compatible aircraft endpoint is `/data/aircraft.json`.
 
 ## Mapping philosophy
 
-The bridge deliberately avoids inventing information that is not present in FR24 `/flights.js`:
+The bridge avoids inventing information not supported by the selected receiver source. Aircraft without a position are retained and `alt_geom` is not synthesized.
 
-- Aircraft without a position are retained.
-- Latitude/longitude are emitted only when present.
-- Ambiguous zero altitude and speed values are omitted.
-- A zero altitude is not automatically converted to an on-ground state.
-- `alt_geom` is not synthesized from the single altitude supplied by FR24.
-- `seen: 0` is synthetic because `/flights.js` does not provide equivalent message-age semantics.
-- Top-level `messages` is the number of aircraft in the current snapshot for compatibility; it is not a dump1090 cumulative message counter.
+SBS mode provides genuine message-age information: `seen` is the age of the aircraft's latest SBS message and `seen_pos` is the age of its latest position. Top-level `messages` is the cumulative number of valid SBS `MSG` records received since startup. Aircraft are removed after 60 seconds without an SBS message.
+
+In flights.js mode, the original conservative behavior remains: ambiguous zero altitude/speed values are omitted, zero altitude is not automatically treated as on-ground, `seen: 0` is synthetic, and top-level `messages` is the number of aircraft in the current snapshot.
 
 Consumers performing geographic functions such as closest/nearest-aircraft calculations should ignore aircraft without a usable position.
 
 ## Status and failure behavior
 
-The last good aircraft snapshot is retained if the FR24 receiver becomes temporarily unavailable. Feed state is reported independently of process health so an upstream receiver outage does not cause a Home Assistant restart loop.
-
-- up to 10 seconds since a successful poll: `ok`
-- over 10 through 30 seconds: `degraded`
-- over 30 seconds (or no successful connection): `unhealthy`
-
-`/health` reports the health of the bridge service itself.
+Feed state is reported independently of process health so an upstream receiver outage does not cause a Home Assistant restart loop. `/status` adapts to the selected source: SBS mode reports message/connection statistics; flights.js mode reports polling statistics. `/health` reports the health of the bridge service itself.
 
 ## Security
 
-FR24 receiver credentials are stored in Home Assistant App configuration and used only for HTTP Digest authentication to the configured local receiver. The bridge does not return credentials from its status endpoints or intentionally log them.
+SBS mode requires no receiver credentials. When flights.js mode is selected, receiver credentials are stored in Home Assistant App configuration and used only for HTTP Digest authentication to the configured local receiver. The bridge does not return credentials from its status endpoints or intentionally log them.
 
 The aircraft feed is unauthenticated. Keep port 8085 internal unless LAN access is actually required.
 

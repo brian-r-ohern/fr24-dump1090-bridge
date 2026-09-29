@@ -2,19 +2,34 @@
 
 ## Configuration
 
-Set the receiver host, HTTP port, username, and password from the app Configuration tab. The credentials are used only for HTTP Digest authentication to the local FR24 receiver and are not returned by `/status` or `/health`.
+The bridge supports two local data sources from a Flightradar24 receiver.
+
+- **SBS/BaseStation (`sbs_30003`) — recommended/default.** Connects to the receiver's local TCP BaseStation feed, normally on port `30003`. Only the receiver host is required for this mode.
+- **FR24 web feed (`flights_js`) — alternate.** Polls the receiver's authenticated `/flights.js` endpoint. This mode requires the receiver HTTP port, username, and password.
 
 Default operational values:
 
-- Receiver port: `80`
-- Poll interval: `2` seconds
-- Request timeout: `3` seconds per attempt
+- Input source: `sbs_30003`
+- SBS/BaseStation port: `30003`
+- FR24 HTTP port: `80`
+- flights.js poll interval: `2` seconds
+- HTTP request timeout: `3` seconds per attempt
 
-## Feed behavior
+Changing the source requires an app restart. The bridge does not automatically fail over between sources.
 
-The bridge deliberately maps only fields supported by the FR24 `/flights.js` source. It retains aircraft without positions, omits ambiguous zero altitude/speed values, does not invent an on-ground state, and does not synthesize geometric altitude from barometric altitude.
+## SBS/BaseStation behavior
 
-The last good aircraft snapshot remains available if the receiver becomes unavailable. `/status` reports the feed as degraded after 10 seconds without a successful poll and unhealthy after 30 seconds. `/health` remains healthy while the bridge process itself is responsive so an upstream receiver outage does not create a Supervisor restart loop.
+The SBS reader consumes the TCP stream continuously and updates an in-memory aircraft state table keyed by ICAO address. The input stream is not throttled. Once per second the bridge publishes a consolidated dump1090/readsb-style snapshot containing one record per active aircraft.
+
+Aircraft state is removed after 60 seconds without an SBS message. `seen` reports the age of the aircraft's most recent SBS message, while `seen_pos` reports the age of its most recent position. The top-level `messages` value is the cumulative count of valid SBS `MSG` records received since the bridge started.
+
+The bridge maps supported SBS fields including callsign, barometric altitude/on-ground state, ground speed, track, position, barometric vertical rate, and squawk. Different SBS message types contribute fields to the same aircraft state; an individual SBS line is not emitted as an individual aircraft record.
+
+## flights.js behavior
+
+The alternate `flights_js` mode retains the v0.1.1 mapping behavior. It keeps aircraft without positions, omits ambiguous zero altitude/speed values, does not invent an on-ground state, and does not synthesize geometric altitude from the single altitude exposed by `/flights.js`.
+
+The last good aircraft snapshot remains available if the receiver becomes unavailable. `/status` reports the feed as degraded after 10 seconds without fresh input and unhealthy after 30 seconds. `/health` remains healthy while the bridge process itself is responsive so an upstream receiver outage does not create a Supervisor restart loop.
 
 ## Internal Home Assistant access
 
@@ -34,19 +49,16 @@ If desired, enable **Show in sidebar** on the app Info page for direct access fr
 
 The app declares container port 8085 with no host mapping by default. If a client outside Home Assistant needs the feed, assign a host port in the app's **Network** settings, then configure the consumer to use the Home Assistant host address and that port.
 
-This is often the simplest stable configuration when another integration needs a user-entered host and port.
-
 ## Status endpoints
 
-`/status` reports bridge uptime, receiver/feed state, poll timing and success/failure counts, aircraft totals, and positioned/non-positioned counts.
+`/status` reports bridge uptime, selected input source, receiver/feed state, aircraft totals, and source-specific statistics. SBS mode reports message rate/count, last-message age, parse errors, and connection/reconnection counts. flights.js mode reports poll timing and success/failure counts.
 
 `/health` intentionally reports process/service health rather than upstream FR24 receiver health.
 
 ## Compatibility notes
 
-The output is intentionally a conservative compatibility feed, not a byte-for-byte or semantic clone of dump1090/readsb:
+The output is a conservative compatibility feed, not a byte-for-byte clone of dump1090/readsb.
 
-- `seen` is emitted as `0` because equivalent age information is not available from this FR24 source.
-- `messages` is the current aircraft count, not a cumulative decoder message count.
-- `alt_geom` is not synthesized.
-- Aircraft without positions remain in the feed and should be ignored by consumers for geographic nearest/closest calculations.
+In SBS mode, `seen`, `seen_pos`, and cumulative `messages` have useful decoder-like semantics. In flights.js mode, `seen` remains synthetic `0` and `messages` remains the current aircraft count because equivalent source information is unavailable.
+
+`alt_geom` is not synthesized in either mode. Aircraft without positions remain in the feed and should be ignored by consumers for geographic nearest/closest calculations.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+- Adds the receiver's SBS/BaseStation TCP feed on port `30003` as the recommended/default input source.
+- Retains the authenticated `/flights.js` feed as an explicitly selectable alternate source.
+- Continuously consumes SBS messages and consolidates them into one aircraft state record per ICAO address.
+- Publishes SBS-derived aircraft snapshots once per second without throttling the receiver input stream.
+- Adds decoder-like `seen`, `seen_pos`, cumulative `messages`, barometric vertical rate, and squawk data when supplied by SBS.
+- Adds SBS connection, message-rate, parse-error, and reconnection information to `/status` and the Ingress status page.
+- Keeps the existing dump1090/readsb endpoints and v0.1.1 flights.js mapping behavior.
+- Does not automatically fail over between input sources; source selection remains explicit.
+
 ## 0.1.1
 
 - Adds Home Assistant Ingress support for the human-readable bridge status page.
