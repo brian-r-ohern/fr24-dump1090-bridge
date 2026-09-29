@@ -4,29 +4,6 @@ A Home Assistant App that converts already-decoded aircraft data exposed locally
 
 The recommended/default input is the receiver's **SBS/BaseStation TCP feed on port 30003**. The receiver's authenticated `/flights.js` web feed remains available as an alternate source. The bridge does **not** decode ADS-B RF data, does not replace the FR24 receiver, and does not interact with or modify the receiver's normal FR24 uplink.
 
-## Known consumers and integrations
-
-FR24 dump1090 Bridge publishes dump1090/readsb-compatible aircraft JSON
-intended for use by local applications that consume `aircraft.json`.
-
-The following applications have been used with the bridge:
-
-- **ADSB Aircraft Tracker for Home Assistant**  
-  https://github.com/hook-365/adsb-aircraft-tracker
-
-  A Home Assistant integration for monitoring aircraft from a
-  dump1090/readsb-compatible data source. Its documentation includes
-  configuration guidance specifically for FR24 dump1090 Bridge.
-
-- **ADS-B SkyVista for Home Assistant**  
-  https://github.com/aplittlecub/ADS-B-SkyVista
-
-  A Home Assistant aircraft visualization/integration that can consume
-  dump1090-compatible aircraft data.
-
-These are independent projects. They are not included with, maintained by,
-or affiliated with FR24 dump1090 Bridge.
-
 ## Home Assistant installation
 
 1. In Home Assistant, open **Settings → Apps → Install app**.
@@ -110,3 +87,26 @@ The aircraft feed is unauthenticated. Keep port 8085 internal unless LAN access 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
+
+## Known consumers and integrations
+
+FR24 dump1090 Bridge publishes dump1090/readsb-compatible aircraft JSON
+intended for use by local applications that consume `aircraft.json`.
+
+The following applications have been used with the bridge:
+
+- **ADSB Aircraft Tracker for Home Assistant**  
+  https://github.com/hook-365/adsb-aircraft-tracker
+
+  A Home Assistant integration for monitoring aircraft from a
+  dump1090/readsb-compatible data source. Its documentation includes
+  configuration guidance specifically for FR24 dump1090 Bridge.
+
+- **ADS-B SkyVista for Home Assistant**  
+  https://github.com/aplittlecub/ADS-B-SkyVista
+
+  A Home Assistant aircraft visualization/integration that can consume
+  dump1090-compatible aircraft data.
+
+These are independent projects. They are not included with, maintained by,
+or affiliated with FR24 dump1090 Bridge.
