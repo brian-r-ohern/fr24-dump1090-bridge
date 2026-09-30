@@ -16,7 +16,11 @@ The recommended/default input is the receiver's **SBS/BaseStation TCP feed on po
 For the alternate `flights_js` source, also configure the receiver HTTP port, username, and password.
 
 The app currently supports `amd64` Home Assistant systems.
+
+## Image of Configuration
 <img width="1284" height="829" alt="image" src="https://github.com/user-attachments/assets/e0cf717d-a439-4912-a198-e9e4a511c5d6" />
+
+## Image of Home Page/Map
 <img width="2294" height="1252" alt="image" src="https://github.com/user-attachments/assets/d08204e8-f2dd-4261-bb41-763cd54aad50" />
 
 ## Input sources
@@ -39,7 +43,8 @@ Source selection is explicit. v0.2.0 does not automatically fail over between SB
 - `/data/aircraft.json` — readsb/dump1090-compatible alias
 - `/status` — detailed bridge/feed status
 - `/health` — bridge process health
-- `/` — human-readable status page
+- `/` — Raw ADS-B map
+- `/status-page` — human-readable status page
 
 The service listens on container port `8085`. It is not exposed to the LAN by default. A host port can be assigned in the app's Network settings when an external client needs access.
 
