@@ -11,10 +11,8 @@
 - Move the existing human-readable status page to `/status-page`.
 - Route map tiles through the bridge with an identifiable OpenStreetMap User-Agent, viewport-only requests, HTTP cache-header preservation, and conditional cache revalidation.
 - Add a compact lower-right operational status panel to the Raw ADS-B Map.
-- Increment 4: preserve an accurate origin-only web Referer through Home Assistant Ingress for upstream map-tile requests.
-- Increment 4: reject `X-Blocked` or non-PNG upstream tile responses and never write them to the tile cache.
-- Increment 4: start with a fresh versioned tile cache so blocked images cached by the Increment 3 test are not reused.
-
+- Preserve an origin-only web Referer through Home Assistant Ingress for upstream map-tile requests.
+- Reject blocked or non-PNG upstream tile responses so invalid responses are never written to the tile cache.
 
 ## 0.2.0
 
