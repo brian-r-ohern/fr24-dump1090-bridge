@@ -48,7 +48,7 @@ Source selection is explicit. v0.2.0 does not automatically fail over between SB
 
 The service listens on container port `8085`. It is not exposed to the LAN by default. A host port can be assigned in the app's Network settings when an external client needs access.
 
-The human-readable status page is also available through Home Assistant Ingress. Use **Open Web UI** on the app Info page, or enable **Show in sidebar**, without exposing port `8085` to the LAN.
+The **Raw ADS-B Map** is available through Home Assistant Ingress. Use **Open Web UI** on the app Info page, or enable **Show in sidebar**, without exposing port `8085` to the LAN. The detailed human-readable status page is available from the map or directly at `/status-page`.
 
 ## Using it with ADSB Aircraft Tracker
 

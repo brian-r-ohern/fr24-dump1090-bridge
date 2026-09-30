@@ -41,9 +41,9 @@ Consumers can use `/aircraft.json` or `/data/aircraft.json` as required.
 
 ## Home Assistant web UI (Ingress)
 
-The app supports Home Assistant Ingress for the human-readable bridge status page. Use **Open Web UI** from the app Info page to open it through Home Assistant without publishing port `8085` to the LAN.
+The app supports Home Assistant Ingress for the **Raw ADS-B Map**, which is the default web interface in v0.3.0. Use **Open Web UI** from the app Info page to open the map through Home Assistant without publishing port `8085` to the LAN.
 
-If desired, enable **Show in sidebar** on the app Info page for direct access from the Home Assistant sidebar. Ingress is for the human status interface; integrations such as ADSB Aircraft Tracker can continue to use the app's internal hostname and port `8085`.
+If desired, enable **Show in sidebar** on the app Info page for direct access from the Home Assistant sidebar. The detailed human-readable status page is available from the map or at `/status-page`. Integrations such as ADSB Aircraft Tracker can continue to use the app's internal hostname and port `8085`.
 
 ## Optional LAN access
 
