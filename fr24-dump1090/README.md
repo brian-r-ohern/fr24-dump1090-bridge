@@ -6,11 +6,12 @@ The recommended/default source is the receiver's SBS/BaseStation TCP feed on por
 
 ## Endpoints
 
+- `/` — Raw ADS-B Map
 - `/aircraft.json`
 - `/data/aircraft.json`
-- `/status`
+- `/status` 
 - `/health`
-- `/` — human-readable status page
+- `/status-page` — human-readable status page
 
 The service listens on container port `8085`. LAN publication is disabled by default.
 
