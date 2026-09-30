@@ -16,6 +16,8 @@ The recommended/default input is the receiver's **SBS/BaseStation TCP feed on po
 For the alternate `flights_js` source, also configure the receiver HTTP port, username, and password.
 
 The app currently supports `amd64` Home Assistant systems.
+<img width="1284" height="829" alt="image" src="https://github.com/user-attachments/assets/e0cf717d-a439-4912-a198-e9e4a511c5d6" />
+<img width="2294" height="1252" alt="image" src="https://github.com/user-attachments/assets/d08204e8-f2dd-4261-bb41-763cd54aad50" />
 
 ## Input sources
 
