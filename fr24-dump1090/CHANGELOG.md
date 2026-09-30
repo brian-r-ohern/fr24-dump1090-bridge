@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0
+
+- Add a Raw ADS-B Map as the default Home Assistant Ingress/sidebar view.
+- Plot all currently positioned aircraft from the bridge snapshot.
+- Update markers once per second without resetting user pan/zoom.
+- Fit the initial map to all positioned aircraft and provide a manual **Fit aircraft** control.
+- Rotate aircraft symbols using reported track and show raw ADS-B/SBS fields in popups.
+- Keep the existing bridge input, state assembly, and JSON endpoints unchanged.
+- Move the existing human-readable status page to `/status-page`.
+- Route map tiles through the bridge with an identifiable OpenStreetMap User-Agent, viewport-only requests, HTTP cache-header preservation, and conditional cache revalidation.
+- Add a compact lower-right operational status panel to the Raw ADS-B Map.
+- Increment 4: preserve an accurate origin-only web Referer through Home Assistant Ingress for upstream map-tile requests.
+- Increment 4: reject `X-Blocked` or non-PNG upstream tile responses and never write them to the tile cache.
+- Increment 4: start with a fresh versioned tile cache so blocked images cached by the Increment 3 test are not reused.
+
+
 ## 0.2.0
 
 - Adds the receiver's SBS/BaseStation TCP feed on port `30003` as the recommended/default input source.

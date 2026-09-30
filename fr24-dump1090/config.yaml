@@ -1,5 +1,5 @@
 name: "FR24 dump1090 Bridge"
-version: "0.2.0"
+version: "0.3.0"
 slug: "fr24_dump1090"
 description: >-
   Converts local Flightradar24 receiver aircraft data into
@@ -13,7 +13,7 @@ init: false
 ingress: true
 ingress_port: 8085
 panel_icon: mdi:airplane
-panel_title: "FR24 dump1090 Bridge"
+panel_title: "FR24 ADS-B"
 ports:
   8085/tcp: null
 ports_description:

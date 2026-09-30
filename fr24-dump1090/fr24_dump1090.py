@@ -4,13 +4,16 @@
 import ast
 import json
 import os
+import re
 import socket
 import threading
 import time
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPDigestAuthHandler, HTTPPasswordMgrWithDefaultRealm, build_opener
+from urllib.parse import parse_qs, urlsplit
+from urllib.request import HTTPDigestAuthHandler, HTTPPasswordMgrWithDefaultRealm, Request, build_opener, urlopen
 
 CONFIG_PATH = os.environ.get("FR24_OPTIONS_PATH", "/data/options.json")
 LISTEN_HOST = "0.0.0.0"
@@ -22,6 +25,18 @@ SBS_AIRCRAFT_TIMEOUT = 60.0
 SBS_RECONNECT_DELAY = 2.0
 SBS_SOCKET_TIMEOUT = 5.0
 VALID_SOURCES = ("sbs_30003", "flights_js")
+OSM_TILE_BASE = "https://tile.openstreetmap.org"
+OSM_TILE_CACHE = os.environ.get("FR24_TILE_CACHE", "/data/map-tile-cache-v2")
+OSM_TILE_USER_AGENT = "FR24-dump1090-Bridge/0.3.0 (+https://github.com/brian-r-ohern/fr24-dump1090-bridge)"
+OSM_TILE_FALLBACK_TTL = 7 * 24 * 60 * 60
+OSM_TILE_TIMEOUT = 10
+TILE_PROXY_BUILD = "v0.3.0"
+tile_proxy_requests = 0
+tile_proxy_cache_hits = 0
+tile_proxy_upstream_fetches = 0
+tile_proxy_blocked = 0
+tile_proxy_last_error = None
+tile_proxy_last_referer = None
 
 
 def load_config():
@@ -77,6 +92,140 @@ sbs_reconnects = 0
 sbs_connection_attempts = 0
 sbs_message_rate = 0.0
 
+
+
+def _cache_max_age(headers, now):
+    cache_control = headers.get("Cache-Control", "")
+    match = re.search(r"(?:^|,)\s*max-age=(\d+)", cache_control, re.I)
+    if match:
+        return max(0, int(match.group(1)))
+    expires = headers.get("Expires")
+    if expires:
+        try:
+            dt = parsedate_to_datetime(expires)
+            return max(0, int(dt.timestamp() - now))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return OSM_TILE_FALLBACK_TTL
+
+
+def _tile_paths(z, x, y):
+    directory = os.path.join(OSM_TILE_CACHE, str(z), str(x))
+    return directory, os.path.join(directory, f"{y}.png"), os.path.join(directory, f"{y}.json")
+
+
+def _read_tile_meta(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_tile_cache(tile_path, meta_path, body, meta):
+    os.makedirs(os.path.dirname(tile_path), exist_ok=True)
+    tmp_tile = tile_path + ".tmp"
+    tmp_meta = meta_path + ".tmp"
+    with open(tmp_tile, "wb") as handle:
+        handle.write(body)
+    with open(tmp_meta, "w", encoding="utf-8") as handle:
+        json.dump(meta, handle, separators=(",", ":"))
+    os.replace(tmp_tile, tile_path)
+    os.replace(tmp_meta, meta_path)
+
+
+class TileBlockedError(RuntimeError):
+    pass
+
+
+def _valid_web_origin(value):
+    """Return a safe origin-only Referer, or None. Never forward an Ingress path/token."""
+    if not value:
+        return None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}/"
+
+
+def _remove_cached_tile(tile_path, meta_path):
+    for path in (tile_path, meta_path):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"[WARN] Unable to remove rejected map cache entry {path}: {exc}", flush=True)
+
+
+def get_map_tile(z, x, y, referer=None):
+    if z < 0 or z > 19 or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
+        raise ValueError("invalid tile coordinates")
+    directory, tile_path, meta_path = _tile_paths(z, x, y)
+    del directory
+    now = time.time()
+    meta = _read_tile_meta(meta_path)
+    if os.path.isfile(tile_path) and float(meta.get("expires_at", 0)) > now:
+        with open(tile_path, "rb") as handle:
+            return handle.read(), meta, True
+
+    headers = {"User-Agent": OSM_TILE_USER_AGENT, "Accept": "image/png,image/*;q=0.8,*/*;q=0.5"}
+    # Preserve the real browser Referer end-to-end when Ingress supplies one.
+    if referer:
+        headers["Referer"] = referer
+    if os.path.isfile(tile_path):
+        if meta.get("etag"):
+            headers["If-None-Match"] = meta["etag"]
+        if meta.get("last_modified"):
+            headers["If-Modified-Since"] = meta["last_modified"]
+
+    global tile_proxy_upstream_fetches, tile_proxy_blocked, tile_proxy_last_error, tile_proxy_last_referer
+    tile_proxy_upstream_fetches += 1
+    tile_proxy_last_referer = referer
+    request = Request(f"{OSM_TILE_BASE}/{z}/{x}/{y}.png", headers=headers, method="GET")
+    try:
+        with urlopen(request, timeout=OSM_TILE_TIMEOUT) as response:
+            body = response.read()
+            response_headers = response.headers
+            blocked = response_headers.get("X-Blocked")
+            content_type = (response_headers.get("Content-Type") or "").lower()
+            if blocked or not content_type.startswith("image/png"):
+                _remove_cached_tile(tile_path, meta_path)
+                reason = blocked or f"unexpected content type {content_type or 'missing'}"
+                tile_proxy_blocked += 1
+                tile_proxy_last_error = str(reason)
+                raise TileBlockedError(reason)
+            ttl = _cache_max_age(response_headers, now)
+            new_meta = {
+                "fetched_at": now,
+                "expires_at": now + ttl,
+                "etag": response_headers.get("ETag"),
+                "last_modified": response_headers.get("Last-Modified"),
+                "cache_control": response_headers.get("Cache-Control", f"public, max-age={ttl}"),
+                "expires": response_headers.get("Expires"),
+            }
+            _write_tile_cache(tile_path, meta_path, body, new_meta)
+            return body, new_meta, False
+    except HTTPError as exc:
+        if exc.code == 304 and os.path.isfile(tile_path):
+            ttl = _cache_max_age(exc.headers, now)
+            meta.update({
+                "fetched_at": now,
+                "expires_at": now + ttl,
+                "etag": exc.headers.get("ETag") or meta.get("etag"),
+                "last_modified": exc.headers.get("Last-Modified") or meta.get("last_modified"),
+                "cache_control": exc.headers.get("Cache-Control") or meta.get("cache_control") or f"public, max-age={ttl}",
+                "expires": exc.headers.get("Expires") or meta.get("expires"),
+            })
+            with open(tile_path, "rb") as handle:
+                body = handle.read()
+            _write_tile_cache(tile_path, meta_path, body, meta)
+            return body, meta, True
+        raise
 
 def fetch_data(retries=3):
     last_error = None
@@ -364,6 +513,21 @@ def snapshot_status():
     }
 
 
+MAP_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Raw ADS-B Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><style>
+html,body,#map{height:100%;margin:0;background:#111;font-family:system-ui,-apple-system,Segoe UI,sans-serif}#map{position:absolute;inset:0}
+.topbar{position:absolute;z-index:1000;top:10px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.90);color:#eee;border-radius:8px;padding:8px 12px;box-shadow:0 2px 8px #0008;display:flex;gap:12px;align-items:center;white-space:nowrap}.topbar strong{font-size:14px}.stats{font-size:12px;color:#ccc}.ok{color:#6ddc79}.bad{color:#ff6b6b}.degraded{color:#ffd166}.btn{border:1px solid #666;background:#222;color:#eee;border-radius:5px;padding:5px 8px;cursor:pointer}.btn:hover{background:#333}
+.info{position:absolute;z-index:1000;right:10px;bottom:24px;min-width:205px;background:rgba(17,17,17,.90);color:#ddd;border-radius:7px;padding:8px 10px;box-shadow:0 2px 8px #0008;font-size:11px}.info-title{font-weight:700;font-size:12px;margin-bottom:5px}.info-grid{display:grid;grid-template-columns:auto auto;gap:2px 12px}.info-grid span:nth-child(odd){color:#aaa}.info-grid span:nth-child(even){text-align:right}.nav{border-top:1px solid #444;margin-top:6px;padding-top:5px;text-align:right}.nav a{color:#8fc1ff;text-decoration:none}.plane{font-size:24px;line-height:24px;color:#1367a8;text-shadow:0 0 2px white,0 0 2px white;transform-origin:50% 50%}.leaflet-popup-content{min-width:190px}.ac-title{font-weight:700;font-size:15px}.ac-grid{margin-top:6px;display:grid;grid-template-columns:auto auto;gap:2px 10px}.ac-grid span:nth-child(odd){color:#666}
+</style></head><body><div id="map"></div><div class="topbar"><strong>Raw ADS-B Map</strong><span id="stats" class="stats">Loading aircraft…</span><button class="btn" id="fit">Fit aircraft</button></div><div class="info"><div class="info-title">Bridge status</div><div id="info-grid" class="info-grid"><span>Feed</span><span>Loading…</span></div><div class="nav"><a href="status-page">Status</a> · <a href="data/aircraft.json">aircraft.json</a></div></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
+(()=>{const map=L.map('map',{zoomControl:true}).setView([39.5,-98.35],4);const tileTemplate='tiles/{z}/{x}/{y}.png?ref_origin='+encodeURIComponent(window.location.origin);const tiles=L.tileLayer(tileTemplate,{maxZoom:19,tileSize:256,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});tiles.on('tileerror',e=>console.warn('FR24 tile proxy error',e?.tile?.src||e));tiles.addTo(map);const markers=new Map();let initialFit=false,lastBounds=null;const statsEl=document.getElementById('stats'),infoEl=document.getElementById('info-grid');const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=(v,s='')=>(v===undefined||v===null||v==='')?'—':`${esc(v)}${s}`;const altitude=v=>v==='ground'?'Ground':(v===undefined||v===null?'—':`${Number(v).toLocaleString()} ft`);const signed=v=>(v===undefined||v===null)?'—':`${Number(v)>0?'+':''}${Number(v).toLocaleString()} ft/min`;const duration=v=>{v=Number(v);if(!Number.isFinite(v))return '—';const h=Math.floor(v/3600),m=Math.floor((v%3600)/60);return h?`${h}h ${m}m`:`${m}m`};
+function popup(ac){const title=(ac.flight||'').trim()||ac.hex.toUpperCase();return `<div class="ac-title">${esc(title)}</div><div class="ac-grid"><span>ICAO</span><b>${esc(ac.hex.toUpperCase())}</b><span>Altitude</span><b>${altitude(ac.alt_baro)}</b><span>Ground speed</span><b>${fmt(ac.gs,' kt')}</b><span>Track</span><b>${fmt(ac.track,'°')}</b><span>Vertical rate</span><b>${signed(ac.baro_rate)}</b><span>Squawk</span><b>${fmt(ac.squawk)}</b><span>Last message</span><b>${fmt(ac.seen,' sec')}</b><span>Last position</span><b>${fmt(ac.seen_pos,' sec')}</b></div>`}
+function icon(track){const d=Number.isFinite(Number(track))?Number(track):0;return L.divIcon({className:'',html:`<div class="plane" style="transform:rotate(${d}deg)">✈</div>`,iconSize:[24,24],iconAnchor:[12,12]})}function fitAircraft(){if(lastBounds&&lastBounds.isValid())map.fitBounds(lastBounds.pad(.08),{maxZoom:10})}document.getElementById('fit').addEventListener('click',fitAircraft);
+function renderInfo(s){if(!s){infoEl.innerHTML='<span>Status</span><span class="bad">Unavailable</span>';return}const cls=s.feed_status==='ok'?'ok':(s.feed_status==='degraded'?'degraded':'bad');const rows=[['Feed',`<b class="${cls}">${esc(String(s.feed_status||'unknown').toUpperCase())}</b>`],['Source',esc(s.source)],['Receiver',esc(s.receiver)],['Messages',s.messages_received!=null?Number(s.messages_received).toLocaleString():'—'],['Message rate',s.message_rate_per_second!=null?`${esc(s.message_rate_per_second)} / sec`:'—'],['Aircraft',esc(s.aircraft_total)],['With position',esc(s.aircraft_with_position)],['Without position',esc(s.aircraft_without_position)],['Parse errors',s.parse_errors!=null?esc(s.parse_errors):'—'],['Reconnects',s.reconnections!=null?esc(s.reconnections):'—'],['Uptime',duration(s.uptime_seconds)]];infoEl.innerHTML=rows.map(([k,v])=>`<span>${esc(k)}</span><span>${v}</span>`).join('')}
+async function refresh(){try{const [ar,sr]=await Promise.all([fetch('data/aircraft.json',{cache:'no-store'}),fetch('status',{cache:'no-store'})]);if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),status=sr.ok?await sr.json():null,active=new Set(),points=[];for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(ac.track)}).addTo(map);markers.set(key,m)}else{m.setLatLng([lat,lon]);m.setIcon(icon(ac.track))}m.bindPopup(popup(ac))}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}lastBounds=points.length?L.latLngBounds(points):null;if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refresh();setInterval(refresh,1000)})();
+</script></body></html>
+'''
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
@@ -387,11 +551,54 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_tile(self, body, meta):
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("X-FR24-Tile-Proxy", TILE_PROXY_BUILD)
+        self.send_header("Cache-Control", meta.get("cache_control") or "public, max-age=604800")
+        if meta.get("etag"):
+            self.send_header("ETag", meta["etag"])
+        if meta.get("last_modified"):
+            self.send_header("Last-Modified", meta["last_modified"])
+        if meta.get("expires"):
+            self.send_header("Expires", meta["expires"])
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        global requests_served
+        global requests_served, tile_proxy_requests, tile_proxy_cache_hits
         with lock:
             requests_served += 1
-        path = self.path.split("?", 1)[0]
+        path, _, query_string = self.path.partition("?")
+        tile_match = re.fullmatch(r"/tiles/(\d+)/(\d+)/(\d+)\.png", path)
+        if path == "/tile-debug":
+            self.send_json({"build": TILE_PROXY_BUILD, "requests": tile_proxy_requests, "cache_hits": tile_proxy_cache_hits, "upstream_fetches": tile_proxy_upstream_fetches, "blocked": tile_proxy_blocked, "last_error": tile_proxy_last_error, "last_referer": tile_proxy_last_referer})
+            return
+        if tile_match:
+            tile_proxy_requests += 1
+            try:
+                z, x, y = (int(value) for value in tile_match.groups())
+                query = parse_qs(query_string, keep_blank_values=False)
+                # Ingress can suppress the browser Referer. The page supplies only its
+                # actual origin (never the Ingress path/token), which is what a normal
+                # strict-origin cross-site tile request would disclose.
+                referer = _valid_web_origin(self.headers.get("Referer"))
+                if not referer:
+                    referer = _valid_web_origin((query.get("ref_origin") or [None])[0])
+                body, meta, _cached = get_map_tile(z, x, y, referer)
+                if _cached:
+                    tile_proxy_cache_hits += 1
+                self.send_tile(body, meta)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, 400)
+            except TileBlockedError as exc:
+                print(f"[WARN] Map tile {path} rejected upstream: {exc}", flush=True)
+                self.send_json({"error": "tile upstream rejected request"}, 502)
+            except (HTTPError, URLError, TimeoutError, OSError) as exc:
+                print(f"[WARN] Map tile {path} failed: {exc}", flush=True)
+                self.send_json({"error": "tile upstream unavailable"}, 502)
+            return
         if path in ("/aircraft.json", "/data/aircraft.json"):
             with lock:
                 payload = latest_data
@@ -404,6 +611,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(snapshot_status())
             return
         if path == "/":
+            self.send_html(MAP_HTML)
+            return
+        if path == "/status-page":
             s = snapshot_status()
             common = f"""<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"5\">
 <title>FR24 to dump1090</title><style>
@@ -431,7 +641,7 @@ a{{color:#7db7ff}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color
             html = common + source_rows + f"""<tr><td>Aircraft total</td><td>{s['aircraft_total']}</td></tr>
 <tr><td>Aircraft with position</td><td>{s['aircraft_with_position']}</td></tr><tr><td>Aircraft without position</td><td>{s['aircraft_without_position']}</td></tr>
 <tr><td>HTTP requests served</td><td>{s['requests_served']}</td></tr><tr><td>Uptime</td><td>{s['uptime_seconds']} sec</td></tr></table>
-<h2>Endpoints</h2><p><a href=\"data/aircraft.json\">/data/aircraft.json</a><br><a href=\"aircraft.json\">/aircraft.json</a><br><a href=\"status\">/status</a><br><a href=\"health\">/health</a></p>
+<h2>Navigation</h2><p><a href=\"./\">Raw ADS-B Map</a></p><h2>Endpoints</h2><p><a href=\"data/aircraft.json\">/data/aircraft.json</a><br><a href=\"aircraft.json\">/aircraft.json</a><br><a href=\"status\">/status</a><br><a href=\"health\">/health</a></p>
 <p><small>This page refreshes every 5 seconds.</small></p></body></html>"""
             self.send_html(html)
             return
