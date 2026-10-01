@@ -119,3 +119,10 @@ development installations.
 
 The Raw ADS-B Map learns a persistent receiver-coverage outline from the selected bridge aircraft source. Positioned aircraft are measured from Home Assistant `zone.home` and assigned to 360 one-degree bearing bins. Each bin retains only its farthest observed aircraft. The map connects successive populated bins, including across currently empty bearings, without storing synthetic observations. Coverage is saved under `/data` and continues learning across app and HAOS restarts.
 
+
+
+## Maximum observed range coverage
+
+The Raw ADS-B Map maintains 360 persistent 1-degree bearing bins under `/data/range-coverage.json`. Distance is the sole record-selection metric: a bin is replaced only when a farther positioned aircraft is observed. Altitude, aircraft identity, callsign, position, and timestamps are metadata for the winning distance observation. Empty bins are not populated by interpolation; the map only connects populated vertices for display.
+
+The `/range-coverage` diagnostic endpoint includes convergence metadata: collection start, total updates, first fills, record replacements, last update, hourly update counts, and each bin's first-observed time and update count. Existing v0.5.1 coverage files are migrated without resetting learned ranges.

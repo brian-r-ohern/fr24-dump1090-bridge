@@ -8,6 +8,9 @@
 - Connect successive populated bearing bins on the map, spanning empty bins visually without creating synthetic observations.
 - Continuously expand a bearing bin only when a farther aircraft is observed; records never shrink automatically.
 - Keep coverage collection independent of optional ADSB Aircraft Tracker enrichment.
+- Preserve altitude, aircraft identity, callsign, position, and observation time as metadata for each distance record.
+- Track coverage convergence metadata: collection start, first observation per bin, per-bin update count, total updates, first fills, record replacements, last update, and hourly update counts.
+- Migrate existing v0.5.1 coverage data in place without discarding learned maximum ranges.
 
 
 ## 0.5.0

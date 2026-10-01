@@ -122,6 +122,14 @@ coverage_dirty = False
 coverage_generation = 0
 coverage_last_flush = 0.0
 coverage_loaded = False
+coverage_stats = {
+    "collection_started": None,
+    "total_updates": 0,
+    "first_fills": 0,
+    "record_replacements": 0,
+    "last_update": None,
+    "hourly_updates": {},
+}
 
 # SBS/BaseStation source state. Each field carries the newest value observed for
 # an ICAO address; last_seen and position_seen retain independent ages.
@@ -465,7 +473,7 @@ def _coverage_distance_bearing(lat1, lon1, lat2, lon2):
 
 
 def load_coverage():
-    global coverage_bins, coverage_loaded
+    global coverage_bins, coverage_loaded, coverage_stats
     try:
         with open(COVERAGE_PATH, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
@@ -478,11 +486,31 @@ def load_coverage():
                 bearing = item.get("bearing")
                 distance = item.get("distance_nm")
                 if isinstance(bearing, int) and 0 <= bearing < 360 and isinstance(distance, (int, float)) and distance >= 0:
+                    # v1 coverage files did not have first_observed/update_count.
+                    # Preserve the learned maximum and seed the new metadata from
+                    # the winning observation rather than resetting coverage.
+                    item = dict(item)
+                    item.setdefault("first_observed", item.get("observed"))
+                    item.setdefault("update_count", 1)
                     loaded[bearing] = item
+
+        old_stats = payload.get("stats", {}) if isinstance(payload, dict) else {}
+        observed_times = [x.get("observed") for x in loaded if x and x.get("observed")]
+        first_times = [x.get("first_observed") for x in loaded if x and x.get("first_observed")]
+        populated = sum(x is not None for x in loaded)
+        stats = {
+            "collection_started": old_stats.get("collection_started") or (min(first_times) if first_times else None),
+            "total_updates": int(old_stats.get("total_updates", populated)),
+            "first_fills": int(old_stats.get("first_fills", populated)),
+            "record_replacements": int(old_stats.get("record_replacements", 0)),
+            "last_update": old_stats.get("last_update") or (max(observed_times) if observed_times else None),
+            "hourly_updates": dict(old_stats.get("hourly_updates", {})) if isinstance(old_stats.get("hourly_updates", {}), dict) else {},
+        }
         with lock:
             coverage_bins = loaded
+            coverage_stats = stats
             coverage_loaded = True
-        print(f"[INFO] Coverage history loaded: {sum(x is not None for x in loaded)}/360 bearing bins", flush=True)
+        print(f"[INFO] Coverage history loaded: {populated}/360 bearing bins", flush=True)
     except FileNotFoundError:
         with lock:
             coverage_loaded = True
@@ -502,8 +530,10 @@ def flush_coverage(force=False):
         if not force and now - coverage_last_flush < COVERAGE_FLUSH_SECONDS:
             return
         bins = [dict(item) for item in coverage_bins if item is not None]
+        stats = dict(coverage_stats)
+        stats["hourly_updates"] = dict(coverage_stats.get("hourly_updates", {}))
         generation = coverage_generation
-    payload = {"version": 1, "bin_degrees": 1, "updated": iso_utc(now), "bins": bins}
+    payload = {"version": 2, "bin_degrees": 1, "updated": iso_utc(now), "stats": stats, "bins": bins}
     tmp = COVERAGE_PATH + ".tmp"
     try:
         os.makedirs(os.path.dirname(COVERAGE_PATH) or ".", exist_ok=True)
@@ -526,7 +556,7 @@ def flush_coverage(force=False):
 
 
 def update_coverage_from_snapshot():
-    global coverage_dirty, coverage_generation
+    global coverage_dirty, coverage_generation, coverage_stats
     with lock:
         marker = dict(home_marker) if home_marker else None
         aircraft = list(latest_data.get("aircraft", []))
@@ -534,7 +564,9 @@ def update_coverage_from_snapshot():
         return
     home_lat, home_lon = marker["latitude"], marker["longitude"]
     changed = False
-    observed = iso_utc(time.time())
+    now = time.time()
+    observed = iso_utc(now)
+    hour_key = time.strftime("%Y-%m-%dT%H:00:00Z", time.gmtime(now))
     for ac in aircraft:
         try:
             lat, lon = float(ac["lat"]), float(ac["lon"])
@@ -548,6 +580,9 @@ def update_coverage_from_snapshot():
             current = coverage_bins[bin_no]
             if current is not None and float(current.get("distance_nm", -1)) >= distance_nm:
                 continue
+            first_fill = current is None
+            first_observed = observed if first_fill else current.get("first_observed") or current.get("observed") or observed
+            update_count = 1 if first_fill else int(current.get("update_count", 1)) + 1
             coverage_bins[bin_no] = {
                 "bearing": bin_no,
                 "distance_nm": round(distance_nm, 2),
@@ -556,8 +591,18 @@ def update_coverage_from_snapshot():
                 "hex": str(ac.get("hex", "")).strip().lower() or None,
                 "flight": str(ac.get("flight", "")).strip() or None,
                 "altitude_ft": ac.get("alt_baro"),
+                "first_observed": first_observed,
                 "observed": observed,
+                "update_count": update_count,
             }
+            if not coverage_stats.get("collection_started"):
+                coverage_stats["collection_started"] = observed
+            coverage_stats["total_updates"] = int(coverage_stats.get("total_updates", 0)) + 1
+            key = "first_fills" if first_fill else "record_replacements"
+            coverage_stats[key] = int(coverage_stats.get(key, 0)) + 1
+            coverage_stats["last_update"] = observed
+            hourly = coverage_stats.setdefault("hourly_updates", {})
+            hourly[hour_key] = int(hourly.get(hour_key, 0)) + 1
             coverage_dirty = True
             coverage_generation += 1
             changed = True
@@ -579,7 +624,10 @@ def coverage_updater():
 def coverage_payload():
     with lock:
         bins = [dict(item) for item in coverage_bins if item is not None]
-    return {"available": bool(home_marker), "bin_degrees": 1, "populated_bins": len(bins), "total_bins": 360, "bins": bins}
+        stats = dict(coverage_stats)
+        stats["hourly_updates"] = dict(coverage_stats.get("hourly_updates", {}))
+        available = bool(home_marker)
+    return {"available": available, "bin_degrees": 1, "populated_bins": len(bins), "total_bins": 360, "stats": stats, "bins": bins}
 
 
 def _entity_attributes(entity_id):
