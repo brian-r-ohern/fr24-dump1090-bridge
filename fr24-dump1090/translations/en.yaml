@@ -1,7 +1,13 @@
 configuration:
   source:
     name: Input source
-    description: Use the receiver's SBS/BaseStation TCP feed (recommended) or the local flights.js web feed.
+    description: "Choose exactly one aircraft source: SBS/BaseStation TCP (recommended for FR24 receivers), FR24 flights.js, or a standard dump1090/readsb aircraft.json URL."
+  aircraft_json_url:
+    name: aircraft.json URL
+    description: Full HTTP or HTTPS URL to a standard dump1090/readsb aircraft.json feed; required only for aircraft_json mode.
+  aircraft_json_poll_interval:
+    name: aircraft.json poll interval
+    description: Seconds between polls when using aircraft_json mode.
   receiver_host:
     name: FR24 receiver host
     description: IP address or hostname of the local Flightradar24 receiver.

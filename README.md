@@ -1,8 +1,8 @@
 # FR24 dump1090 Bridge for Home Assistant
 
-A Home Assistant App that converts already-decoded aircraft data exposed locally by a Flightradar24 receiver into conservative dump1090/readsb-compatible `aircraft.json` endpoints.
+A Home Assistant App that normalizes an explicitly selected local aircraft data source into conservative dump1090/readsb-compatible `aircraft.json` endpoints.
 
-The recommended/default input is the receiver's **SBS/BaseStation TCP feed on port 30003**. The receiver's authenticated `/flights.js` web feed remains available as an alternate source. The bridge does **not** decode ADS-B RF data, does not replace the FR24 receiver, and does not interact with or modify the receiver's normal FR24 uplink.
+The recommended/default input is the receiver's **SBS/BaseStation TCP feed on port 30003**. The receiver's authenticated `/flights.js` web feed and a standard dump1090/readsb `aircraft.json` URL are available as mutually exclusive alternate sources. The bridge does **not** decode ADS-B RF data, does not replace the FR24 receiver, and does not interact with or modify the receiver's normal FR24 uplink.
 
 ## Home Assistant installation
 
@@ -13,7 +13,7 @@ The recommended/default input is the receiver's **SBS/BaseStation TCP feed on po
 5. Enter the FR24 receiver host. Leave **SBS/BaseStation (`sbs_30003`)** selected for the recommended configuration.
 6. Start the app and enable **Start on boot** after confirming operation.
 
-For the alternate `flights_js` source, also configure the receiver HTTP port, username, and password.
+For the alternate `flights_js` source, also configure the receiver HTTP port, username, and password. For `aircraft_json`, configure the full URL of the dump1090/readsb-compatible feed.
 
 The app currently supports `amd64` Home Assistant systems.
 
@@ -35,7 +35,15 @@ Once per second the bridge publishes a consolidated snapshot with one record per
 
 The original v0.1.x path remains available. It polls the receiver's authenticated `/flights.js` endpoint and conservatively translates the aircraft-state snapshot.
 
-Source selection is explicit. v0.2.0 does not automatically fail over between SBS and flights.js.
+### dump1090/readsb aircraft.json — alternate
+
+The bridge can poll a standard dump1090/readsb `aircraft.json` URL, normalize the snapshot, and publish it through the same bridge endpoints and Raw ADS-B Map.
+
+Source selection is explicit. v0.4.0 uses exactly one source and does not merge or automatically fail over between sources.
+
+## Home marker
+
+v0.4.0 can read Home Assistant `zone.home` through the supported App/Core API proxy and display it on the Raw ADS-B Map. Home coordinates are not included in `/status`, aircraft JSON, logs, or tile diagnostics. If the entity is unavailable, the map continues without the marker.
 
 ## Endpoints
 

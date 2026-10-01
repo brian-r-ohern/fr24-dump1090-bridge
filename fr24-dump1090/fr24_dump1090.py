@@ -24,13 +24,13 @@ SBS_SNAPSHOT_INTERVAL = 1.0
 SBS_AIRCRAFT_TIMEOUT = 60.0
 SBS_RECONNECT_DELAY = 2.0
 SBS_SOCKET_TIMEOUT = 5.0
-VALID_SOURCES = ("sbs_30003", "flights_js")
+VALID_SOURCES = ("sbs_30003", "flights_js", "aircraft_json")
 OSM_TILE_BASE = "https://tile.openstreetmap.org"
 OSM_TILE_CACHE = os.environ.get("FR24_TILE_CACHE", "/data/map-tile-cache-v2")
-OSM_TILE_USER_AGENT = "FR24-dump1090-Bridge/0.3.0 (+https://github.com/brian-r-ohern/fr24-dump1090-bridge)"
+OSM_TILE_USER_AGENT = "FR24-dump1090-Bridge/0.4.0 (+https://github.com/brian-r-ohern/fr24-dump1090-bridge)"
 OSM_TILE_FALLBACK_TTL = 7 * 24 * 60 * 60
 OSM_TILE_TIMEOUT = 10
-TILE_PROXY_BUILD = "v0.3.0"
+TILE_PROXY_BUILD = "v0.4.0"
 tile_proxy_requests = 0
 tile_proxy_cache_hits = 0
 tile_proxy_upstream_fetches = 0
@@ -46,12 +46,17 @@ def load_config():
     if source not in VALID_SOURCES:
         raise ValueError(f"Invalid source {source!r}; expected one of: {', '.join(VALID_SOURCES)}")
     receiver_host = str(cfg.get("receiver_host", "")).strip()
-    if not receiver_host:
-        raise ValueError("Missing required option: receiver_host")
+    aircraft_json_url = str(cfg.get("aircraft_json_url", "")).strip()
     username = str(cfg.get("username", ""))
     password = str(cfg.get("password", ""))
+    if source in ("sbs_30003", "flights_js") and not receiver_host:
+        raise ValueError(f"{source} source requires receiver_host")
     if source == "flights_js" and (not username.strip() or not password):
         raise ValueError("flights_js source requires username and password")
+    if source == "aircraft_json":
+        parts = urlsplit(aircraft_json_url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError("aircraft_json source requires a valid http(s) aircraft_json_url")
     return {
         "source": source,
         "receiver_host": receiver_host,
@@ -61,14 +66,17 @@ def load_config():
         "password": password,
         "poll_interval": int(cfg.get("poll_interval", 2)),
         "request_timeout": int(cfg.get("request_timeout", 3)),
+        "aircraft_json_url": aircraft_json_url,
+        "aircraft_json_poll_interval": int(cfg.get("aircraft_json_poll_interval", 1)),
     }
 
 
 CFG = load_config()
-RECEIVER_URL = f"http://{CFG['receiver_host']}:{CFG['receiver_port']}/flights.js"
+RECEIVER_URL = f"http://{CFG['receiver_host']}:{CFG['receiver_port']}/flights.js" if CFG["receiver_host"] else None
 
 password_mgr = HTTPPasswordMgrWithDefaultRealm()
-password_mgr.add_password(None, RECEIVER_URL, CFG["username"], CFG["password"])
+if RECEIVER_URL:
+    password_mgr.add_password(None, RECEIVER_URL, CFG["username"], CFG["password"])
 opener = build_opener(HTTPDigestAuthHandler(password_mgr))
 
 latest_data = {"now": int(time.time()), "messages": 0, "aircraft": []}
@@ -80,6 +88,17 @@ consecutive_failures = 0
 total_successful_polls = 0
 total_failed_polls = 0
 requests_served = 0
+json_last_messages = None
+json_message_rate = None
+json_previous_messages = None
+json_previous_message_time = None
+
+# Home Assistant Core API state used only by the map presentation layer.
+# Coordinates are deliberately excluded from /status and aircraft JSON output.
+home_marker = None
+home_marker_last_attempt = None
+home_marker_last_success = None
+home_marker_error = None
 
 # SBS/BaseStation source state. Each field carries the newest value observed for
 # an ICAO address; last_seen and position_seen retain independent ages.
@@ -303,6 +322,110 @@ def flights_js_updater():
         time.sleep(CFG["poll_interval"])
 
 
+
+def normalize_aircraft_json(data):
+    """Validate and normalize a dump1090/readsb aircraft.json snapshot."""
+    if not isinstance(data, dict) or not isinstance(data.get("aircraft"), list):
+        raise ValueError("aircraft_json response must be an object containing an aircraft array")
+    aircraft = []
+    for raw in data["aircraft"]:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        hex_id = str(item.get("hex", "")).strip().lower()
+        if not hex_id:
+            continue
+        item["hex"] = hex_id
+        aircraft.append(item)
+    messages = data.get("messages")
+    if not isinstance(messages, (int, float)) or isinstance(messages, bool):
+        messages = len(aircraft)
+    now_value = data.get("now")
+    if not isinstance(now_value, (int, float)) or isinstance(now_value, bool):
+        now_value = int(time.time())
+    return {"now": now_value, "messages": messages, "aircraft": aircraft}
+
+
+def aircraft_json_updater():
+    global latest_data, last_success_time, last_poll_duration_ms
+    global consecutive_failures, total_successful_polls, total_failed_polls
+    global json_last_messages, json_message_rate, json_previous_messages, json_previous_message_time
+    while True:
+        started = time.time()
+        try:
+            request = Request(CFG["aircraft_json_url"], headers={"User-Agent": OSM_TILE_USER_AGENT}, method="GET")
+            with urlopen(request, timeout=CFG["request_timeout"]) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            transformed = normalize_aircraft_json(json.loads(raw))
+            finished = time.time()
+            messages = transformed.get("messages")
+            with lock:
+                if isinstance(messages, (int, float)) and not isinstance(messages, bool):
+                    json_last_messages = messages
+                    if json_previous_messages is not None and json_previous_message_time is not None and messages >= json_previous_messages:
+                        elapsed = max(0.001, finished - json_previous_message_time)
+                        json_message_rate = (messages - json_previous_messages) / elapsed
+                    json_previous_messages = messages
+                    json_previous_message_time = finished
+                latest_data = transformed
+                last_success_time = finished
+                last_poll_duration_ms = round((finished - started) * 1000, 1)
+                consecutive_failures = 0
+                total_successful_polls += 1
+        except Exception as exc:
+            with lock:
+                consecutive_failures += 1
+                total_failed_polls += 1
+                last_poll_duration_ms = round((time.time() - started) * 1000, 1)
+            print(f"[ERROR] aircraft.json poll failed: {exc}", flush=True)
+        time.sleep(CFG["aircraft_json_poll_interval"])
+
+
+def _supervisor_core_request(path):
+    token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("SUPERVISOR_TOKEN is unavailable")
+    request = Request(
+        f"http://supervisor/core/api{path}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="GET",
+    )
+    with urlopen(request, timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def refresh_home_marker():
+    global home_marker, home_marker_last_attempt, home_marker_last_success, home_marker_error
+    home_marker_last_attempt = time.time()
+    try:
+        state = _supervisor_core_request("/states/zone.home")
+        attrs = state.get("attributes", {}) if isinstance(state, dict) else {}
+        lat = float(attrs["latitude"])
+        lon = float(attrs["longitude"])
+        radius = float(attrs.get("radius", 0))
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError("zone.home coordinates are out of range")
+        with lock:
+            home_marker = {"latitude": lat, "longitude": lon, "radius": max(0, radius)}
+            home_marker_last_success = time.time()
+            home_marker_error = None
+    except Exception as exc:
+        with lock:
+            home_marker_error = str(exc)
+        print(f"[WARN] Home marker unavailable from Home Assistant zone.home: {exc}", flush=True)
+
+
+def home_marker_updater():
+    while True:
+        refresh_home_marker()
+        time.sleep(300)
+
+
+def map_config():
+    with lock:
+        marker = dict(home_marker) if home_marker else None
+    return {"home": marker}
+
 def _number(value, integer=False):
     if value == "":
         return None
@@ -454,12 +577,15 @@ def snapshot_status():
     with lock:
         aircraft = list(latest_data.get("aircraft", []))
         served = requests_served
-        if CFG["source"] == "flights_js":
+        source = CFG["source"]
+        if source in ("flights_js", "aircraft_json"):
             success_time = last_success_time
             poll_ms = last_poll_duration_ms
             failures = consecutive_failures
             successes = total_successful_polls
             failed_polls = total_failed_polls
+            source_messages = json_last_messages if source == "aircraft_json" else None
+            source_rate = json_message_rate if source == "aircraft_json" else None
         else:
             success_time = sbs_last_message_time
             connected = sbs_connected
@@ -472,7 +598,7 @@ def snapshot_status():
     age = None if success_time is None else max(0.0, now - success_time)
     positioned = sum(1 for ac in aircraft if ac.get("lat") is not None and ac.get("lon") is not None)
 
-    if CFG["source"] == "flights_js":
+    if source in ("flights_js", "aircraft_json"):
         if successes == 0 and failed_polls == 0:
             feed_status, receiver = "starting", "connecting"
         elif success_time is None or age > UNHEALTHY_AFTER_SECONDS:
@@ -481,16 +607,21 @@ def snapshot_status():
             feed_status, receiver = "degraded", "stale"
         else:
             feed_status, receiver = "ok", "connected"
-        return {
-            "service_status": "ok", "source": "flights_js", "feed_status": feed_status,
+        result = {
+            "service_status": "ok", "source": source, "feed_status": feed_status,
             "receiver": receiver, "uptime_seconds": round(now - START_TIME, 1),
-            "poll_interval_seconds": CFG["poll_interval"], "last_success": iso_utc(success_time),
+            "poll_interval_seconds": CFG["poll_interval"] if source == "flights_js" else CFG["aircraft_json_poll_interval"],
+            "last_success": iso_utc(success_time),
             "last_poll_age_seconds": None if age is None else round(age, 1),
             "last_poll_duration_ms": poll_ms, "consecutive_failures": failures,
             "successful_polls": successes, "failed_polls": failed_polls,
             "aircraft_total": len(aircraft), "aircraft_with_position": positioned,
             "aircraft_without_position": len(aircraft) - positioned, "requests_served": served,
         }
+        if source == "aircraft_json":
+            result["messages_received"] = source_messages
+            result["message_rate_per_second"] = None if source_rate is None else round(source_rate, 1)
+        return result
 
     if success_time is None:
         feed_status, receiver = ("starting", "connecting") if attempts <= 1 else ("unhealthy", "disconnected")
@@ -517,14 +648,17 @@ MAP_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><style>
 html,body,#map{height:100%;margin:0;background:#111;font-family:system-ui,-apple-system,Segoe UI,sans-serif}#map{position:absolute;inset:0}
 .topbar{position:absolute;z-index:1000;top:10px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.90);color:#eee;border-radius:8px;padding:8px 12px;box-shadow:0 2px 8px #0008;display:flex;gap:12px;align-items:center;white-space:nowrap}.topbar strong{font-size:14px}.stats{font-size:12px;color:#ccc}.ok{color:#6ddc79}.bad{color:#ff6b6b}.degraded{color:#ffd166}.btn{border:1px solid #666;background:#222;color:#eee;border-radius:5px;padding:5px 8px;cursor:pointer}.btn:hover{background:#333}
-.info{position:absolute;z-index:1000;right:10px;bottom:24px;min-width:205px;background:rgba(17,17,17,.90);color:#ddd;border-radius:7px;padding:8px 10px;box-shadow:0 2px 8px #0008;font-size:11px}.info-title{font-weight:700;font-size:12px;margin-bottom:5px}.info-grid{display:grid;grid-template-columns:auto auto;gap:2px 12px}.info-grid span:nth-child(odd){color:#aaa}.info-grid span:nth-child(even){text-align:right}.nav{border-top:1px solid #444;margin-top:6px;padding-top:5px;text-align:right}.nav a{color:#8fc1ff;text-decoration:none}.plane{font-size:24px;line-height:24px;color:#1367a8;text-shadow:0 0 2px white,0 0 2px white;transform-origin:50% 50%}.leaflet-popup-content{min-width:190px}.ac-title{font-weight:700;font-size:15px}.ac-grid{margin-top:6px;display:grid;grid-template-columns:auto auto;gap:2px 10px}.ac-grid span:nth-child(odd){color:#666}
+.info{position:absolute;z-index:1000;right:10px;bottom:24px;min-width:205px;background:rgba(17,17,17,.90);color:#ddd;border-radius:7px;padding:8px 10px;box-shadow:0 2px 8px #0008;font-size:11px}.info-title{font-weight:700;font-size:12px;margin-bottom:5px}.info-grid{display:grid;grid-template-columns:auto auto;gap:2px 12px}.info-grid span:nth-child(odd){color:#aaa}.info-grid span:nth-child(even){text-align:right}.nav{border-top:1px solid #444;margin-top:6px;padding-top:5px;text-align:right}.nav a{color:#8fc1ff;text-decoration:none}.plane{font-size:24px;line-height:24px;color:#1367a8;text-shadow:0 0 2px white,0 0 2px white;transform-origin:50% 50%}.leaflet-popup-content{min-width:190px}.ac-title{font-weight:700;font-size:15px}.ac-grid{margin-top:6px;display:grid;grid-template-columns:auto auto;gap:2px 10px}.ac-grid span:nth-child(odd){color:#666}.home-marker{font-size:26px;line-height:26px;text-shadow:0 0 3px white,0 0 3px white}
+@media (max-width:600px){.topbar{left:8px;right:8px;top:8px;transform:none;white-space:normal;display:grid;grid-template-columns:1fr auto;gap:4px 8px;padding:7px 9px}.topbar strong{min-width:0}.topbar .stats{grid-column:1 / -1;grid-row:2}.topbar .btn{grid-column:2;grid-row:1}.info{right:6px;bottom:20px;max-width:calc(100vw - 32px)}}
 </style></head><body><div id="map"></div><div class="topbar"><strong>Raw ADS-B Map</strong><span id="stats" class="stats">Loading aircraft…</span><button class="btn" id="fit">Fit aircraft</button></div><div class="info"><div class="info-title">Bridge status</div><div id="info-grid" class="info-grid"><span>Feed</span><span>Loading…</span></div><div class="nav"><a href="status-page">Status</a> · <a href="data/aircraft.json">aircraft.json</a></div></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
-(()=>{const map=L.map('map',{zoomControl:true}).setView([39.5,-98.35],4);const tileTemplate='tiles/{z}/{x}/{y}.png?ref_origin='+encodeURIComponent(window.location.origin);const tiles=L.tileLayer(tileTemplate,{maxZoom:19,tileSize:256,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});tiles.on('tileerror',e=>console.warn('FR24 tile proxy error',e?.tile?.src||e));tiles.addTo(map);const markers=new Map();let initialFit=false,lastBounds=null;const statsEl=document.getElementById('stats'),infoEl=document.getElementById('info-grid');const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=(v,s='')=>(v===undefined||v===null||v==='')?'—':`${esc(v)}${s}`;const altitude=v=>v==='ground'?'Ground':(v===undefined||v===null?'—':`${Number(v).toLocaleString()} ft`);const signed=v=>(v===undefined||v===null)?'—':`${Number(v)>0?'+':''}${Number(v).toLocaleString()} ft/min`;const duration=v=>{v=Number(v);if(!Number.isFinite(v))return '—';const h=Math.floor(v/3600),m=Math.floor((v%3600)/60);return h?`${h}h ${m}m`:`${m}m`};
+(()=>{const map=L.map('map',{zoomControl:true}).setView([39.5,-98.35],4);const tileTemplate='tiles/{z}/{x}/{y}.png?ref_origin='+encodeURIComponent(window.location.origin);const tiles=L.tileLayer(tileTemplate,{maxZoom:19,tileSize:256,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});tiles.on('tileerror',e=>console.warn('FR24 tile proxy error',e?.tile?.src||e));tiles.addTo(map);const markers=new Map();let homeMarker=null,homeCircle=null;let initialFit=false,lastBounds=null;const statsEl=document.getElementById('stats'),infoEl=document.getElementById('info-grid');const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=(v,s='')=>(v===undefined||v===null||v==='')?'—':`${esc(v)}${s}`;const altitude=v=>v==='ground'?'Ground':(v===undefined||v===null?'—':`${Number(v).toLocaleString()} ft`);const signed=v=>(v===undefined||v===null)?'—':`${Number(v)>0?'+':''}${Number(v).toLocaleString()} ft/min`;const duration=v=>{v=Number(v);if(!Number.isFinite(v))return '—';const h=Math.floor(v/3600),m=Math.floor((v%3600)/60);return h?`${h}h ${m}m`:`${m}m`};
 function popup(ac){const title=(ac.flight||'').trim()||ac.hex.toUpperCase();return `<div class="ac-title">${esc(title)}</div><div class="ac-grid"><span>ICAO</span><b>${esc(ac.hex.toUpperCase())}</b><span>Altitude</span><b>${altitude(ac.alt_baro)}</b><span>Ground speed</span><b>${fmt(ac.gs,' kt')}</b><span>Track</span><b>${fmt(ac.track,'°')}</b><span>Vertical rate</span><b>${signed(ac.baro_rate)}</b><span>Squawk</span><b>${fmt(ac.squawk)}</b><span>Last message</span><b>${fmt(ac.seen,' sec')}</b><span>Last position</span><b>${fmt(ac.seen_pos,' sec')}</b></div>`}
 function icon(track){const d=Number.isFinite(Number(track))?Number(track):0;return L.divIcon({className:'',html:`<div class="plane" style="transform:rotate(${d}deg)">✈</div>`,iconSize:[24,24],iconAnchor:[12,12]})}function fitAircraft(){if(lastBounds&&lastBounds.isValid())map.fitBounds(lastBounds.pad(.08),{maxZoom:10})}document.getElementById('fit').addEventListener('click',fitAircraft);
 function renderInfo(s){if(!s){infoEl.innerHTML='<span>Status</span><span class="bad">Unavailable</span>';return}const cls=s.feed_status==='ok'?'ok':(s.feed_status==='degraded'?'degraded':'bad');const rows=[['Feed',`<b class="${cls}">${esc(String(s.feed_status||'unknown').toUpperCase())}</b>`],['Source',esc(s.source)],['Receiver',esc(s.receiver)],['Messages',s.messages_received!=null?Number(s.messages_received).toLocaleString():'—'],['Message rate',s.message_rate_per_second!=null?`${esc(s.message_rate_per_second)} / sec`:'—'],['Aircraft',esc(s.aircraft_total)],['With position',esc(s.aircraft_with_position)],['Without position',esc(s.aircraft_without_position)],['Parse errors',s.parse_errors!=null?esc(s.parse_errors):'—'],['Reconnects',s.reconnections!=null?esc(s.reconnections):'—'],['Uptime',duration(s.uptime_seconds)]];infoEl.innerHTML=rows.map(([k,v])=>`<span>${esc(k)}</span><span>${v}</span>`).join('')}
-async function refresh(){try{const [ar,sr]=await Promise.all([fetch('data/aircraft.json',{cache:'no-store'}),fetch('status',{cache:'no-store'})]);if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),status=sr.ok?await sr.json():null,active=new Set(),points=[];for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(ac.track)}).addTo(map);markers.set(key,m)}else{m.setLatLng([lat,lon]);m.setIcon(icon(ac.track))}m.bindPopup(popup(ac))}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}lastBounds=points.length?L.latLngBounds(points):null;if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refresh();setInterval(refresh,1000)})();
+function homeIcon(){return L.divIcon({className:'',html:'<div class="home-marker">⌂</div>',iconSize:[26,26],iconAnchor:[13,13]})}
+async function refreshHome(){try{const r=await fetch('map-config',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),h=c?.home;if(!h)return;const lat=Number(h.latitude),lon=Number(h.longitude),radius=Number(h.radius||0);if(!Number.isFinite(lat)||!Number.isFinite(lon))return;if(!homeMarker)homeMarker=L.marker([lat,lon],{icon:homeIcon(),zIndexOffset:1000}).addTo(map).bindPopup('<b>Home</b>');else homeMarker.setLatLng([lat,lon]);if(radius>0){if(!homeCircle)homeCircle=L.circle([lat,lon],{radius,weight:1,fillOpacity:.05}).addTo(map);else{homeCircle.setLatLng([lat,lon]);homeCircle.setRadius(radius)}}}catch(err){console.warn('Home marker unavailable',err)}}
+async function refresh(){try{const [ar,sr]=await Promise.all([fetch('data/aircraft.json',{cache:'no-store'}),fetch('status',{cache:'no-store'})]);if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),status=sr.ok?await sr.json():null,active=new Set(),points=[];for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(ac.track)}).addTo(map);markers.set(key,m)}else{m.setLatLng([lat,lon]);m.setIcon(icon(ac.track))}m.bindPopup(popup(ac))}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}lastBounds=points.length?L.latLngBounds(points):null;if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refresh();setInterval(refresh,1000)})();
 </script></body></html>
 '''
 
@@ -599,6 +733,9 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"[WARN] Map tile {path} failed: {exc}", flush=True)
                 self.send_json({"error": "tile upstream unavailable"}, 502)
             return
+        if path == "/map-config":
+            self.send_json(map_config())
+            return
         if path in ("/aircraft.json", "/data/aircraft.json"):
             with lock:
                 payload = latest_data
@@ -624,7 +761,7 @@ a{{color:#7db7ff}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color
 <p>Feed status: <strong class=\"{s['feed_status']}\">{s['feed_status'].upper()}</strong></p><table>
 <tr><td>Input source</td><td>{s['source']}</td></tr><tr><td>Service health</td><td><span class=\"ok\">OK</span></td></tr>
 <tr><td>Receiver</td><td>{s['receiver']}</td></tr>"""
-            if s["source"] == "flights_js":
+            if s["source"] in ("flights_js", "aircraft_json"):
                 age = "N/A" if s["last_poll_age_seconds"] is None else f'{s["last_poll_age_seconds"]:.1f} sec'
                 poll_ms = "N/A" if s["last_poll_duration_ms"] is None else f'{s["last_poll_duration_ms"]} ms'
                 source_rows = f"""<tr><td>Last successful poll</td><td>{human_utc(last_success_time)}</td></tr>
@@ -649,15 +786,20 @@ a{{color:#7db7ff}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color
 
 
 def main():
+    threading.Thread(target=home_marker_updater, daemon=True).start()
     if CFG["source"] == "sbs_30003":
         print(f"Input source: SBS/BaseStation TCP {CFG['receiver_host']}:{CFG['sbs_port']}", flush=True)
         print(f"Snapshot interval: {SBS_SNAPSHOT_INTERVAL} second", flush=True)
         threading.Thread(target=sbs_reader, daemon=True).start()
         threading.Thread(target=sbs_publisher, daemon=True).start()
-    else:
+    elif CFG["source"] == "flights_js":
         print(f"Input source: flights.js at {RECEIVER_URL}", flush=True)
         print(f"Poll interval: {CFG['poll_interval']} seconds", flush=True)
         threading.Thread(target=flights_js_updater, daemon=True).start()
+    else:
+        print(f"Input source: dump1090/readsb aircraft.json at {CFG['aircraft_json_url']}", flush=True)
+        print(f"Poll interval: {CFG['aircraft_json_poll_interval']} seconds", flush=True)
+        threading.Thread(target=aircraft_json_updater, daemon=True).start()
     print(f"Serving on {LISTEN_HOST}:{LISTEN_PORT}", flush=True)
     ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler).serve_forever()
 

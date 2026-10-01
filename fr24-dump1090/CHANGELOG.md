@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Add a third mutually exclusive input source for a standard dump1090/readsb `aircraft.json` URL.
+- Preserve explicit source selection: SBS/BaseStation, FR24 flights.js, or aircraft.json; no source merging or automatic fallback.
+- Normalize and republish the selected aircraft.json source through the existing bridge endpoints and Raw ADS-B Map.
+- Enable the supported Home Assistant Core API proxy and display `zone.home` on the map when available.
+- Keep Home coordinates out of bridge status, aircraft output, logs, and tile diagnostics.
+- Add a responsive two-row map header for narrow/mobile displays while preserving the desktop layout.
+- Retain v0.3.0 map, tile proxy, SBS/flights.js behavior, and endpoint compatibility.
+
 ## 0.3.0
 
 - Add a Raw ADS-B Map as the default Home Assistant Ingress/sidebar view.

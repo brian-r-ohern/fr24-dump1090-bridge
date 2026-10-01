@@ -1,8 +1,8 @@
 name: "FR24 dump1090 Bridge"
-version: "0.3.0"
+version: "0.4.0"
 slug: "fr24_dump1090"
 description: >-
-  Converts local Flightradar24 receiver aircraft data into
+  Normalizes a selected local aircraft data source into
   dump1090/readsb-compatible aircraft.json endpoints.
 url: "https://github.com/brian-r-ohern/fr24-dump1090-bridge"
 arch:
@@ -12,6 +12,7 @@ boot: auto
 init: false
 ingress: true
 ingress_port: 8085
+homeassistant_api: true
 panel_icon: mdi:airplane
 panel_title: "FR24 ADS-B"
 ports:
@@ -24,12 +25,15 @@ options:
   sbs_port: 30003
   poll_interval: 2
   request_timeout: 3
+  aircraft_json_poll_interval: 1
 schema:
-  source: "list(sbs_30003|flights_js)"
-  receiver_host: str
+  source: "list(sbs_30003|flights_js|aircraft_json)"
+  receiver_host: str?
   sbs_port: port
   receiver_port: port
   username: str?
   password: password?
   poll_interval: "int(1,60)"
   request_timeout: "int(1,30)"
+  aircraft_json_url: str?
+  aircraft_json_poll_interval: "int(1,60)"

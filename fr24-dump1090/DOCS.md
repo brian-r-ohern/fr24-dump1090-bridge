@@ -2,10 +2,11 @@
 
 ## Configuration
 
-The bridge supports two local data sources from a Flightradar24 receiver.
+The bridge supports three mutually exclusive aircraft input sources. Exactly one source is selected at startup.
 
-- **SBS/BaseStation (`sbs_30003`) — recommended/default.** Connects to the receiver's local TCP BaseStation feed, normally on port `30003`. Only the receiver host is required for this mode.
+- **SBS/BaseStation (`sbs_30003`) — recommended/default for FR24 receivers.** Connects to the receiver's local TCP BaseStation feed, normally on port `30003`. Only the receiver host is required for this mode.
 - **FR24 web feed (`flights_js`) — alternate.** Polls the receiver's authenticated `/flights.js` endpoint. This mode requires the receiver HTTP port, username, and password.
+- **dump1090/readsb JSON (`aircraft_json`) — alternate.** Polls a configured HTTP or HTTPS `aircraft.json` URL. The bridge validates the standard top-level aircraft array, normalizes ICAO `hex` values, preserves supplied aircraft fields, and republishes the selected source through the bridge endpoints.
 
 Default operational values:
 
@@ -13,6 +14,7 @@ Default operational values:
 - SBS/BaseStation port: `30003`
 - FR24 HTTP port: `80`
 - flights.js poll interval: `2` seconds
+- aircraft.json poll interval: `1` second
 - HTTP request timeout: `3` seconds per attempt
 
 Changing the source requires an app restart. The bridge does not automatically fail over between sources.
@@ -31,6 +33,16 @@ The alternate `flights_js` mode retains the v0.1.1 mapping behavior. It keeps ai
 
 The last good aircraft snapshot remains available if the receiver becomes unavailable. `/status` reports the feed as degraded after 10 seconds without fresh input and unhealthy after 30 seconds. `/health` remains healthy while the bridge process itself is responsive so an upstream receiver outage does not create a Supervisor restart loop.
 
+## aircraft.json behavior
+
+The `aircraft_json` source polls the configured `aircraft_json_url` and republishes one normalized snapshot at a time. Aircraft records must be objects with a non-empty `hex` field; the bridge lowercases `hex` and otherwise preserves supplied fields. If the source omits a numeric top-level `now` or `messages`, the bridge supplies a current timestamp or current aircraft count respectively.
+
+The last good snapshot remains available during temporary upstream failures. Source selection is explicit; the bridge does not merge sources and does not automatically fail over between them.
+
+## Home marker
+
+v0.4.0 requests `zone.home` from Home Assistant through the supported Supervisor/Core API proxy enabled by `homeassistant_api: true`. When latitude and longitude are available, the Raw ADS-B Map displays a Home marker and the zone radius. The coordinates are used only by the map presentation path and are not added to `/status`, `/aircraft.json`, logs, or tile diagnostics. If `zone.home` cannot be read, aircraft mapping continues normally without a Home marker.
+
 ## Internal Home Assistant access
 
 Home Assistant generates an app's internal DNS name as `{REPO}_{SLUG}`, with underscores changed to hyphens for use as a hostname. A local development installation therefore uses a name such as `local-fr24-dump1090`.
@@ -41,7 +53,7 @@ Consumers can use `/aircraft.json` or `/data/aircraft.json` as required.
 
 ## Home Assistant web UI (Ingress)
 
-The app supports Home Assistant Ingress for the **Raw ADS-B Map**, which is the default web interface in v0.3.0. Use **Open Web UI** from the app Info page to open the map through Home Assistant without publishing port `8085` to the LAN.
+The app supports Home Assistant Ingress for the **Raw ADS-B Map**, which is the default web interface in v0.4.0. Use **Open Web UI** from the app Info page to open the map through Home Assistant without publishing port `8085` to the LAN.
 
 If desired, enable **Show in sidebar** on the app Info page for direct access from the Home Assistant sidebar. The detailed human-readable status page is available from the map or at `/status-page`. Integrations such as ADSB Aircraft Tracker can continue to use the app's internal hostname and port `8085`.
 
@@ -51,7 +63,7 @@ The app declares container port 8085 with no host mapping by default. If a clien
 
 ## Status endpoints
 
-`/status` reports bridge uptime, selected input source, receiver/feed state, aircraft totals, and source-specific statistics. SBS mode reports message rate/count, last-message age, parse errors, and connection/reconnection counts. flights.js mode reports poll timing and success/failure counts.
+`/status` reports bridge uptime, selected input source, receiver/feed state, aircraft totals, and source-specific statistics. SBS mode reports message rate/count, last-message age, parse errors, and connection/reconnection counts. flights.js and aircraft.json modes report poll timing and success/failure counts. aircraft.json mode also reports upstream message count/rate when the source supplies a cumulative numeric `messages` value.
 
 `/health` intentionally reports process/service health rather than upstream FR24 receiver health.
 
@@ -59,6 +71,6 @@ The app declares container port 8085 with no host mapping by default. If a clien
 
 The output is a conservative compatibility feed, not a byte-for-byte clone of dump1090/readsb.
 
-In SBS mode, `seen`, `seen_pos`, and cumulative `messages` have useful decoder-like semantics. In flights.js mode, `seen` remains synthetic `0` and `messages` remains the current aircraft count because equivalent source information is unavailable.
+In SBS mode, `seen`, `seen_pos`, and cumulative `messages` have useful decoder-like semantics. In flights.js mode, `seen` remains synthetic `0` and `messages` remains the current aircraft count because equivalent source information is unavailable. In aircraft.json mode, compatible source fields and top-level counters are preserved when supplied.
 
-`alt_geom` is not synthesized in either mode. Aircraft without positions remain in the feed and should be ignored by consumers for geographic nearest/closest calculations.
+`alt_geom` is not synthesized by the SBS or flights.js translators; aircraft.json mode preserves it when the selected source supplies it. Aircraft without positions remain in the feed and should be ignored by consumers for geographic nearest/closest calculations.

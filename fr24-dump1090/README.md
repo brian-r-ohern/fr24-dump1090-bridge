@@ -1,8 +1,8 @@
 # FR24 dump1090 Bridge
 
-Home Assistant App that converts already-decoded aircraft data from a local Flightradar24 receiver into conservative dump1090/readsb-compatible aircraft feeds.
+Home Assistant App that normalizes an explicitly selected local aircraft source into conservative dump1090/readsb-compatible aircraft feeds.
 
-The recommended/default source is the receiver's SBS/BaseStation TCP feed on port `30003`. The authenticated `/flights.js` web feed remains available as an alternate source. The app does **not** decode ADS-B RF data and does not alter the receiver's normal FR24 uplink.
+The recommended/default source is an FR24 receiver's SBS/BaseStation TCP feed on port `30003`. The authenticated FR24 `/flights.js` web feed and a standard dump1090/readsb `aircraft.json` URL are alternate, mutually exclusive sources. The app does **not** decode ADS-B RF data and does not alter an FR24 receiver's normal uplink. v0.4.0 also displays the Home Assistant `zone.home` location on the Raw ADS-B Map when it is available.
 
 ## Endpoints
 
