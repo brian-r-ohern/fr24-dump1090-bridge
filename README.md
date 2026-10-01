@@ -12,10 +12,11 @@ The bridge does **not** decode ADS-B RF data, does not replace the FR24 receiver
 2. Open the repository menu and add: `https://github.com/brian-r-ohern/fr24-dump1090-bridge`
 3. Refresh/reload the App Store if necessary.
 4. Install **FR24 dump1090 Bridge**.
-5. Enter the FR24 receiver host. Leave **SBS/BaseStation (`sbs_30003`)** selected for the recommended configuration.
-6. Start the app and enable **Start on boot** after confirming operation.
+5. Choose exactly one aircraft source. Enable **Show unused optional configuration options** to enter the source-specific connection settings.
+6. For the recommended/default configuration, leave **SBS/BaseStation (`sbs_30003`)** selected and enter the FR24 receiver host.
+7. Start the app and enable **Start on boot** after confirming operation.
 
-For the alternate `flights_js` source, also configure the receiver HTTP port, username, and password. For `aircraft_json`, configure the full URL of the dump1090/readsb-compatible feed.
+For the alternate `flights_js` source, configure the receiver host, HTTP port, username, and password. For `aircraft_json`, configure the full URL of the dump1090/readsb-compatible feed.
 
 The app currently supports `amd64` Home Assistant systems.
 
