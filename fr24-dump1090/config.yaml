@@ -15,6 +15,7 @@ ingress_port: 8085
 homeassistant_api: true
 panel_icon: mdi:airplane
 panel_title: "FR24 ADS-B"
+apparmor: true
 ports:
   8085/tcp: null
 ports_description:

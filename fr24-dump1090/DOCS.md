@@ -67,6 +67,13 @@ The app declares container port 8085 with no host mapping by default. If a clien
 
 `/health` intentionally reports process/service health rather than upstream FR24 receiver health.
 
+## Mobile map behavior
+
+The Raw ADS-B Map uses a responsive header on narrow displays. On mobile
+devices, map status information wraps into a two-row layout while preserving
+the full desktop presentation on wider screens. Aircraft controls, popups,
+status information, and the Home marker remain available on mobile displays.
+
 ## Compatibility notes
 
 The output is a conservative compatibility feed, not a byte-for-byte clone of dump1090/readsb.
@@ -74,3 +81,28 @@ The output is a conservative compatibility feed, not a byte-for-byte clone of du
 In SBS mode, `seen`, `seen_pos`, and cumulative `messages` have useful decoder-like semantics. In flights.js mode, `seen` remains synthetic `0` and `messages` remains the current aircraft count because equivalent source information is unavailable. In aircraft.json mode, compatible source fields and top-level counters are preserved when supplied.
 
 `alt_geom` is not synthesized by the SBS or flights.js translators; aircraft.json mode preserves it when the selected source supplies it. Aircraft without positions remain in the feed and should be ignored by consumers for geographic nearest/closest calculations.
+
+
+## Troubleshooting
+
+If no aircraft are available, first check `/status` or `/status-page` and
+confirm that the selected input source is connected or successfully polling.
+
+For `sbs_30003`, verify that the configured receiver is reachable on TCP port
+`30003`.
+
+For `flights_js`, verify the receiver address, HTTP port, username, and
+password.
+
+For `aircraft_json`, verify that the configured URL is reachable from the app
+and returns a dump1090/readsb-compatible JSON object containing an `aircraft`
+array.
+
+If the Raw ADS-B Map contains aircraft but no Home marker, verify that
+`zone.home` exists in Home Assistant and contains valid latitude and longitude
+attributes. Failure to obtain `zone.home` does not affect aircraft processing.
+
+If another Home Assistant integration cannot reach the bridge, verify the
+installed app's internal hostname and use port `8085`. The hostname assigned
+to a GitHub-installed app differs from the `local-` hostname used for local
+development installations.

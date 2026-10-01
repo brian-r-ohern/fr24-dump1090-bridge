@@ -1,0 +1,58 @@
+#include <tunables/global>
+
+profile ADDON_SLUG flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Capabilities / signals
+  file,
+  signal (send) set=(kill,term,int,hup,cont),
+
+  # Network access
+  #
+  # Required for:
+  # - SBS/BaseStation TCP input
+  # - FR24 flights.js HTTP input
+  # - dump1090/readsb aircraft.json HTTP/HTTPS input
+  # - OpenStreetMap HTTPS tile proxy
+  # - Home Assistant Supervisor/Core API proxy
+  # - DNS resolution
+  # - HTTP service on port 8085
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+
+  # S6-Overlay / Home Assistant base image
+  /init ix,
+  /bin/** ix,
+  /usr/bin/** ix,
+  /run/{s6,s6-rc*,service}/** ix,
+  /package/** ix,
+  /command/** ix,
+  /etc/services.d/** rwix,
+  /etc/cont-init.d/** rwix,
+  /etc/cont-finish.d/** rwix,
+  /run/{,**} rwk,
+  /dev/tty rw,
+
+  # Bashio
+  /usr/lib/bashio/** ix,
+
+  # App startup
+  /run.sh rix,
+
+  # Python runtime and bridge application
+  /usr/bin/python3 ix,
+  /usr/bin/python3.* ix,
+  /opt/fr24_dump1090.py r,
+
+  # Home Assistant App configuration and persistent data.
+  #
+  # Includes:
+  # - /data/options.json
+  # - /data/map-tile-cache-v2/**
+  /data/** rwk,
+
+  # Temporary files if required by the base image/runtime
+  /tmp/** rwk,
+}

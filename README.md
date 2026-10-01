@@ -1,9 +1,10 @@
 # FR24 dump1090 Bridge for Home Assistant
 <img width="256" height="256" alt="Concept1" src="https://github.com/user-attachments/assets/b0ca6d94-d950-4c36-82c2-39d909fb79ba" />
 
-A Home Assistant App that normalizes an explicitly selected local aircraft data source into conservative dump1090/readsb-compatible `aircraft.json` endpoints.
+A Home Assistant App that normalizes an explicitly selected aircraft data source (including a local Flightradar24 ADS-B receiver) into conservative dump1090/readsb-compatible `aircraft.json` endpoints.
 
-The recommended/default input is the receiver's **SBS/BaseStation TCP feed on port 30003**. The receiver's authenticated `/flights.js` web feed and a standard dump1090/readsb `aircraft.json` URL are available as mutually exclusive alternate sources. The bridge does **not** decode ADS-B RF data, does not replace the FR24 receiver, and does not interact with or modify the receiver's normal FR24 uplink.
+The recommended/default input is a receiver's **SBS/BaseStation TCP feed on port 30003**. The receiver's authenticated `/flights.js` web feed and a standard dump1090/readsb `aircraft.json` URL are available as mutually exclusive alternate sources. 
+The bridge does **not** decode ADS-B RF data, does not replace the FR24 receiver, and does not interact with or modify the receiver's normal FR24 uplink.
 
 ## Home Assistant installation
 
@@ -18,10 +19,10 @@ For the alternate `flights_js` source, also configure the receiver HTTP port, us
 
 The app currently supports `amd64` Home Assistant systems.
 
-## Image of Configuration
+## Home Assistant App
 <img width="1284" height="829" alt="image" src="https://github.com/user-attachments/assets/e0cf717d-a439-4912-a198-e9e4a511c5d6" />
 
-## Image of Home Page/Map
+## Raw ADS-B Map
 <img width="2294" height="1252" alt="image" src="https://github.com/user-attachments/assets/d08204e8-f2dd-4261-bb41-763cd54aad50" />
 
 ## Input sources
@@ -59,6 +60,8 @@ The service listens on container port `8085`. It is not exposed to the LAN by de
 
 The **Raw ADS-B Map** is available through Home Assistant Ingress. Use **Open Web UI** on the app Info page, or enable **Show in sidebar**, without exposing port `8085` to the LAN. The detailed human-readable status page is available from the map or directly at `/status-page`.
 
+The Raw ADS-B Map also uses a responsive header that adapts to narrow mobile displays while preserving the full desktop layout.
+
 ## Using it with ADSB Aircraft Tracker
 
 The bridge is intended to work as a source for consumers that accept dump1090/readsb-style `aircraft.json`, including the Home Assistant ADSB Aircraft Tracker integration.
@@ -82,7 +85,7 @@ For consumers that require a complete URL, the dump1090/readsb-compatible aircra
 
 ## Mapping philosophy
 
-The bridge avoids inventing information not supported by the selected receiver source. Aircraft without a position are retained and `alt_geom` is not synthesized.
+The bridge avoids inventing information not supported by the selected input source. Aircraft without a position are retained and `alt_geom` is not synthesized.
 
 SBS mode provides genuine message-age information: `seen` is the age of the aircraft's latest SBS message and `seen_pos` is the age of its latest position. Top-level `messages` is the cumulative number of valid SBS `MSG` records received since startup. Aircraft are removed after 60 seconds without an SBS message.
 
@@ -91,12 +94,15 @@ In flights.js mode, the original conservative behavior remains: ambiguous zero a
 Consumers performing geographic functions such as closest/nearest-aircraft calculations should ignore aircraft without a usable position.
 
 ## Status and failure behavior
-
-Feed state is reported independently of process health so an upstream receiver outage does not cause a Home Assistant restart loop. `/status` adapts to the selected source: SBS mode reports message/connection statistics; flights.js mode reports polling statistics. `/health` reports the health of the bridge service itself.
+Feed state is reported independently of process health so an upstream source outage does not cause a Home Assistant restart loop. `/status` adapts to the selected source: SBS mode reports message and connection statistics, while flights.js and aircraft.json modes report polling statistics. `/health` reports the health of the bridge service itself.
 
 ## Security
 
 SBS mode requires no receiver credentials. When flights.js mode is selected, receiver credentials are stored in Home Assistant App configuration and used only for HTTP Digest authentication to the configured local receiver. The bridge does not return credentials from its status endpoints or intentionally log them.
+
+The aircraft.json source requires only the configured feed URL.
+
+Home Assistant `zone.home` coordinates are used only for Raw ADS-B Map presentation and are not included in aircraft feeds, status output, application logs, or tile diagnostics.
 
 The aircraft feed is unauthenticated. Keep port 8085 internal unless LAN access is actually required.
 
@@ -109,7 +115,7 @@ Apache License 2.0. See [LICENSE](LICENSE).
 FR24 dump1090 Bridge publishes dump1090/readsb-compatible aircraft JSON
 intended for use by local applications that consume `aircraft.json`.
 
-The following applications have been used with the bridge:
+The following application has been used with the bridge:
 
 - **ADSB Aircraft Tracker for Home Assistant**  
   https://github.com/hook-365/adsb-aircraft-tracker
@@ -118,11 +124,5 @@ The following applications have been used with the bridge:
   dump1090/readsb-compatible data source. Its documentation includes
   configuration guidance specifically for FR24 dump1090 Bridge.
 
-- **ADS-B SkyVista for Home Assistant**  
-  https://github.com/aplittlecub/ADS-B-SkyVista
-
-  A Home Assistant aircraft visualization/integration that can consume
-  dump1090-compatible aircraft data.
-
-These are independent projects. They are not included with, maintained by,
+This is an independent project. It is not included with, maintained by,
 or affiliated with FR24 dump1090 Bridge.
