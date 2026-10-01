@@ -21,21 +21,22 @@ ports:
 ports_description:
   8085/tcp: "FR24 dump1090 bridge HTTP service (optional LAN exposure)"
 options:
-  receiver_host: ""
   source: "sbs_30003"
+  receiver_host: ""
   receiver_port: 80
   sbs_port: 30003
   poll_interval: 2
   request_timeout: 3
+  aircraft_json_url: ""
   aircraft_json_poll_interval: 1
 schema:
   source: "list(sbs_30003|flights_js|aircraft_json)"
   receiver_host: str?
-  sbs_port: port
-  receiver_port: port
+  sbs_port: port?
+  receiver_port: port?
   username: str?
   password: password?
-  poll_interval: "int(1,60)"
-  request_timeout: "int(1,30)"
+  poll_interval: "int(1,60)?"
+  request_timeout: "int(1,30)?"
   aircraft_json_url: str?
-  aircraft_json_poll_interval: "int(1,60)"
+  aircraft_json_poll_interval: "int(1,60)?"
