@@ -1,4 +1,5 @@
 # FR24 dump1090 Bridge for Home Assistant
+<img width="256" height="256" alt="Concept1" src="https://github.com/user-attachments/assets/b0ca6d94-d950-4c36-82c2-39d909fb79ba" />
 
 A Home Assistant App that normalizes an explicitly selected local aircraft data source into conservative dump1090/readsb-compatible `aircraft.json` endpoints.
 
