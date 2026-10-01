@@ -104,9 +104,10 @@ home_marker_error = None
 # Optional ADSB Aircraft Tracker enrichment used only by the map presentation
 # layer. The bridge aircraft feed remains unchanged. Missing Tracker entities are
 # normal and simply produce an empty enrichment result.
-tracker_enrichment = {"available": False, "closest_hex": None, "military_hexes": [], "destination_hexes": []}
+tracker_enrichment = {"available": False, "closest_hex": None, "military_hexes": [], "origin_hexes": [], "destination_hexes": [], "aircraft": {}}
 tracker_enrichment_last_attempt = 0.0
 tracker_enrichment_cache_seconds = 2.0
+tracker_available_logged = None
 
 # SBS/BaseStation source state. Each field carries the newest value observed for
 # an ICAO address; last_seen and position_seen retain independent ages.
@@ -442,18 +443,23 @@ def _entity_attributes(entity_id):
 
 
 def refresh_tracker_enrichment(force=False):
-    global tracker_enrichment, tracker_enrichment_last_attempt
+    global tracker_enrichment, tracker_enrichment_last_attempt, tracker_available_logged
     now = time.time()
     with lock:
         if not force and now - tracker_enrichment_last_attempt < tracker_enrichment_cache_seconds:
             return dict(tracker_enrichment)
         tracker_enrichment_last_attempt = now
 
-    result = {"available": False, "closest_hex": None, "military_hexes": [], "destination_hexes": []}
+    result = {"available": False, "closest_hex": None, "military_hexes": [], "origin_hexes": [], "destination_hexes": [], "aircraft": {}}
     try:
         closest = _entity_attributes("sensor.adsb_closest_aircraft")
         military = _entity_attributes("sensor.adsb_military_aircraft_details")
         all_aircraft = _entity_attributes("sensor.adsb_all_aircraft")
+
+        # Require the Tracker's aggregate sensor, rather than treating an empty
+        # entity response as a successful discovery.
+        if "total_aircraft" not in all_aircraft:
+            raise ValueError("ADSB Aircraft Tracker aggregate sensor unavailable")
 
         closest_hex = str(closest.get("hex", "")).strip().lower()
         if closest_hex:
@@ -468,23 +474,36 @@ def refresh_tracker_enrichment(force=False):
                 military_hexes.add(hex_id)
         result["military_hexes"] = sorted(military_hexes)
 
-        destination = CFG["destination_airport"]
-        destination_hexes = set()
-        if destination:
-            for key, value in all_aircraft.items():
-                if not re.fullmatch(r"aircraft_\d+", str(key)) or not isinstance(value, dict):
-                    continue
-                if str(value.get("route_destination", "")).strip().upper() != destination:
-                    continue
-                hex_id = str(value.get("hex", "")).strip().lower()
-                if hex_id:
-                    destination_hexes.add(hex_id)
+        airport = CFG["destination_airport"]
+        origin_hexes, destination_hexes = set(), set()
+        metadata = {}
+        keep = ("tail", "flight", "distance_mi", "distance_display", "aircraft_type", "description", "operator",
+                "route_origin", "route_origin_name", "route_destination", "route_destination_name")
+        for key, value in all_aircraft.items():
+            if not re.fullmatch(r"aircraft_\d+", str(key)) or not isinstance(value, dict):
+                continue
+            hex_id = str(value.get("hex", "")).strip().lower()
+            if not hex_id:
+                continue
+            metadata[hex_id] = {name: value.get(name) for name in keep if value.get(name) not in (None, "")}
+            if airport and str(value.get("route_origin", "")).strip().upper() == airport:
+                origin_hexes.add(hex_id)
+            if airport and str(value.get("route_destination", "")).strip().upper() == airport:
+                destination_hexes.add(hex_id)
+        result["origin_hexes"] = sorted(origin_hexes)
         result["destination_hexes"] = sorted(destination_hexes)
+        result["aircraft"] = metadata
         result["available"] = True
     except Exception:
-        # ADSB Aircraft Tracker is optional. Entity/API absence must leave the
-        # v0.4.0 map behavior intact and must not create repetitive warning logs.
+        # Tracker is optional; absence leaves the v0.4.0 map behavior intact.
         pass
+
+    if tracker_available_logged is None or tracker_available_logged != result["available"]:
+        if result["available"]:
+            print("[INFO] ADSB Aircraft Tracker installation found; using Tracker enrichment data", flush=True)
+        else:
+            print("[INFO] ADSB Aircraft Tracker not found; continuing without Tracker enrichment", flush=True)
+        tracker_available_logged = result["available"]
 
     with lock:
         tracker_enrichment = result
@@ -712,19 +731,25 @@ MAP_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><style>
 html,body,#map{height:100%;margin:0;background:#111;font-family:system-ui,-apple-system,Segoe UI,sans-serif}#map{position:absolute;inset:0}
 .topbar{position:absolute;z-index:1000;top:10px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.90);color:#eee;border-radius:8px;padding:8px 12px;box-shadow:0 2px 8px #0008;display:flex;gap:12px;align-items:center;white-space:nowrap}.topbar strong{font-size:14px}.stats{font-size:12px;color:#ccc}.ok{color:#6ddc79}.bad{color:#ff6b6b}.degraded{color:#ffd166}.btn{border:1px solid #666;background:#222;color:#eee;border-radius:5px;padding:5px 8px;cursor:pointer}.btn:hover{background:#333}
-.info{position:absolute;z-index:1000;right:10px;bottom:24px;min-width:205px;background:rgba(17,17,17,.90);color:#ddd;border-radius:7px;padding:8px 10px;box-shadow:0 2px 8px #0008;font-size:11px}.info-title{font-weight:700;font-size:12px;margin-bottom:5px}.info-grid{display:grid;grid-template-columns:auto auto;gap:2px 12px}.info-grid span:nth-child(odd){color:#aaa}.info-grid span:nth-child(even){text-align:right}.nav{border-top:1px solid #444;margin-top:6px;padding-top:5px;text-align:right}.nav a{color:#8fc1ff;text-decoration:none}.plane{position:relative;font-size:24px;line-height:24px;color:#1367a8;text-shadow:0 0 2px white,0 0 2px white;transform-origin:50% 50%}.plane.military{color:#22a447}.plane.closest{text-shadow:0 0 2px white,0 0 2px white,0 0 5px #f33,0 0 8px #f33}.plane.destination::after{content:"D";position:absolute;right:-7px;top:-7px;font:700 9px/13px system-ui;color:#111;background:#ffd166;border:1px solid #7a5a00;border-radius:50%;width:13px;height:13px;text-align:center;transform:rotate(var(--counter-rotation,0deg))}.leaflet-popup-content{min-width:190px}.ac-title{font-weight:700;font-size:15px}.ac-grid{margin-top:6px;display:grid;grid-template-columns:auto auto;gap:2px 10px}.ac-grid span:nth-child(odd){color:#666}.home-marker{font-size:26px;line-height:26px;text-shadow:0 0 3px white,0 0 3px white}
+.info{position:absolute;z-index:1000;right:10px;bottom:24px;min-width:205px;background:rgba(17,17,17,.90);color:#ddd;border-radius:7px;padding:8px 10px;box-shadow:0 2px 8px #0008;font-size:11px}.info-title{font-weight:700;font-size:12px;margin-bottom:5px}.info-grid{display:grid;grid-template-columns:auto auto;gap:2px 12px}.info-grid span:nth-child(odd){color:#aaa}.info-grid span:nth-child(even){text-align:right}.nav{border-top:1px solid #444;margin-top:6px;padding-top:5px;text-align:right}.nav a{color:#8fc1ff;text-decoration:none}.plane{position:relative;font-size:24px;line-height:24px;color:#1367a8;text-shadow:0 0 2px white,0 0 2px white;transform-origin:50% 50%}.plane.military{color:#22a447}.plane.closest{text-shadow:0 0 2px white,0 0 2px white,0 0 5px #f33,0 0 8px #f33}.plane.destination::after,.plane.origin::after{position:absolute;right:-7px;top:-7px;font:700 9px/13px system-ui;color:#111;background:#ffd166;border:1px solid #7a5a00;border-radius:50%;width:13px;height:13px;text-align:center;transform:rotate(var(--counter-rotation,0deg))}.plane.destination::after{content:"D"}.plane.origin::after{content:"O"}.plane.origin.destination::after{content:"O/D";width:21px;right:-11px;border-radius:7px}.leaflet-popup-content{min-width:190px}.ac-title{font-weight:700;font-size:15px}.ac-flags{margin-top:4px;color:#b22;font-size:11px}.ac-grid{margin-top:6px;display:grid;grid-template-columns:auto auto;gap:2px 10px}.ac-grid span:nth-child(odd){color:#666}.home-marker{font-size:26px;line-height:26px;text-shadow:0 0 3px white,0 0 3px white}
 @media (max-width:600px){.topbar{left:8px;right:8px;top:8px;transform:none;white-space:normal;display:grid;grid-template-columns:1fr auto;gap:4px 8px;padding:7px 9px}.topbar strong{min-width:0}.topbar .stats{grid-column:1 / -1;grid-row:2}.topbar .btn{grid-column:2;grid-row:1}.info{right:6px;bottom:20px;max-width:calc(100vw - 32px)}}
 </style></head><body><div id="map"></div><div class="topbar"><strong>Raw ADS-B Map</strong><span id="stats" class="stats">Loading aircraft…</span><button class="btn" id="fit">Fit aircraft</button></div><div class="info"><div class="info-title">Bridge status</div><div id="info-grid" class="info-grid"><span>Feed</span><span>Loading…</span></div><div class="nav"><a href="status-page">Status</a> · <a href="data/aircraft.json">aircraft.json</a></div></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
-(()=>{const map=L.map('map',{zoomControl:true}).setView([39.5,-98.35],4);const tileTemplate='tiles/{z}/{x}/{y}.png?ref_origin='+encodeURIComponent(window.location.origin);const tiles=L.tileLayer(tileTemplate,{maxZoom:19,tileSize:256,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});tiles.on('tileerror',e=>console.warn('FR24 tile proxy error',e?.tile?.src||e));tiles.addTo(map);const markers=new Map();let homeMarker=null,homeCircle=null;let initialFit=false,lastBounds=null;let enrichment={available:false,closest_hex:null,military_hexes:[],destination_hexes:[]};let destinationAirport=null;const statsEl=document.getElementById('stats'),infoEl=document.getElementById('info-grid');const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=(v,s='')=>(v===undefined||v===null||v==='')?'—':`${esc(v)}${s}`;const altitude=v=>v==='ground'?'Ground':(v===undefined||v===null?'—':`${Number(v).toLocaleString()} ft`);const signed=v=>(v===undefined||v===null)?'—':`${Number(v)>0?'+':''}${Number(v).toLocaleString()} ft/min`;const duration=v=>{v=Number(v);if(!Number.isFinite(v))return '—';const h=Math.floor(v/3600),m=Math.floor((v%3600)/60);return h?`${h}h ${m}m`:`${m}m`};
-function flagsFor(key){const military=(enrichment.military_hexes||[]).includes(key),closest=enrichment.closest_hex===key,destination=(enrichment.destination_hexes||[]).includes(key);return{military,closest,destination}}
-function popup(ac,flags){const title=(ac.flight||'').trim()||ac.hex.toUpperCase();const extra=enrichment.available?`<span>Military</span><b>${flags.military?'Yes':'No'}</b><span>Closest</span><b>${flags.closest?'Yes':'No'}</b>${destinationAirport?`<span>Destination ${esc(destinationAirport)}</span><b>${flags.destination?'Yes':'No'}</b>`:''}`:'';return `<div class="ac-title">${esc(title)}</div><div class="ac-grid"><span>ICAO</span><b>${esc(ac.hex.toUpperCase())}</b><span>Altitude</span><b>${altitude(ac.alt_baro)}</b><span>Ground speed</span><b>${fmt(ac.gs,' kt')}</b><span>Track</span><b>${fmt(ac.track,'°')}</b><span>Vertical rate</span><b>${signed(ac.baro_rate)}</b><span>Squawk</span><b>${fmt(ac.squawk)}</b><span>Last message</span><b>${fmt(ac.seen,' sec')}</b><span>Last position</span><b>${fmt(ac.seen_pos,' sec')}</b>${extra}</div>`}
-function icon(track,flags){const d=Number.isFinite(Number(track))?Number(track):0,classes=['plane'];if(flags.military)classes.push('military');if(flags.closest)classes.push('closest');if(flags.destination)classes.push('destination');return L.divIcon({className:'',html:`<div class="${classes.join(' ')}" style="transform:rotate(${d}deg);--counter-rotation:${-d}deg">✈</div>`,iconSize:[24,24],iconAnchor:[12,12]})}function fitAircraft(){if(lastBounds&&lastBounds.isValid())map.fitBounds(lastBounds.pad(.08),{maxZoom:10})}document.getElementById('fit').addEventListener('click',fitAircraft);
-function renderInfo(s){if(!s){infoEl.innerHTML='<span>Status</span><span class="bad">Unavailable</span>';return}const cls=s.feed_status==='ok'?'ok':(s.feed_status==='degraded'?'degraded':'bad');const rows=[['Feed',`<b class="${cls}">${esc(String(s.feed_status||'unknown').toUpperCase())}</b>`],['Source',esc(s.source)],['Receiver',esc(s.receiver)],['Messages',s.messages_received!=null?Number(s.messages_received).toLocaleString():'—'],['Message rate',s.message_rate_per_second!=null?`${esc(s.message_rate_per_second)} / sec`:'—'],['Aircraft',esc(s.aircraft_total)],['With position',esc(s.aircraft_with_position)],['Without position',esc(s.aircraft_without_position)],['Parse errors',s.parse_errors!=null?esc(s.parse_errors):'—'],['Reconnects',s.reconnections!=null?esc(s.reconnections):'—'],['Uptime',duration(s.uptime_seconds)]];infoEl.innerHTML=rows.map(([k,v])=>`<span>${esc(k)}</span><span>${v}</span>`).join('')}
+(()=>{const map=L.map('map',{zoomControl:true}).setView([39.5,-98.35],4);const tileTemplate='tiles/{z}/{x}/{y}.png?ref_origin='+encodeURIComponent(window.location.origin);const tiles=L.tileLayer(tileTemplate,{maxZoom:19,tileSize:256,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});tiles.on('tileerror',e=>console.warn('FR24 tile proxy error',e?.tile?.src||e));tiles.addTo(map);const markers=new Map();let homeMarker=null,homeCircle=null;let initialFit=false,lastBounds=null;let enrichment={available:false,closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};let destinationAirport=null;const statsEl=document.getElementById('stats'),infoEl=document.getElementById('info-grid');const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=(v,s='')=>(v===undefined||v===null||v==='')?'—':`${esc(v)}${s}`;const altitude=v=>v==='ground'?'Ground':(v===undefined||v===null?'—':`${Number(v).toLocaleString()} ft`);const signed=v=>(v===undefined||v===null)?'—':`${Number(v)>0?'+':''}${Number(v).toLocaleString()} ft/min`;const duration=v=>{v=Number(v);if(!Number.isFinite(v))return '—';const h=Math.floor(v/3600),m=Math.floor((v%3600)/60);return h?`${h}h ${m}m`:`${m}m`};
+function flagsFor(key){const military=new Set(enrichment.military_hexes||[]),origin=new Set(enrichment.origin_hexes||[]),destination=new Set(enrichment.destination_hexes||[]);return{military:military.has(key),closest:enrichment.closest_hex===key,origin:origin.has(key),destination:destination.has(key)}}
+function trackerFor(key){return(enrichment.aircraft||{})[key]||{}}
+function bearing(a,b){const r=Math.PI/180,p1=a.lat*r,p2=b.lat*r,dl=(b.lon-a.lon)*r,y=Math.sin(dl)*Math.cos(p2),x=Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl);return(Math.atan2(y,x)/r+360)%360}
+function distanceM(a,b){const r=Math.PI/180,R=6371000,p1=a.lat*r,p2=b.lat*r,dp=(b.lat-a.lat)*r,dl=(b.lon-a.lon)*r,h=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
+const motion=new Map();
+function displayTrack(key,ac,lat,lon){const now=Date.now(),cur={lat,lon,t:now},prev=motion.get(key);let d=Number(ac.track),source=Number.isFinite(d)?'reported':'none';if(prev){const moved=distanceM(prev,cur);if(moved>=40){d=bearing(prev,cur);source='calculated';motion.set(key,cur)}else if(now-prev.t>15000){motion.set(key,cur)}}else motion.set(key,cur);return{degrees:Number.isFinite(d)?d:null,source}}
+function popup(ac,flags,key,orientation){const t=trackerFor(key),title=(t.flight||ac.flight||'').trim()||ac.hex.toUpperCase(),tail=t.tail&&t.tail!=='Unknown'?t.tail:null,type=[t.aircraft_type,t.description&&t.description!=='Unknown aircraft'?t.description:null].filter(Boolean).join(' · '),badges=[];if(flags.military)badges.push('MILITARY');if(flags.closest)badges.push('CLOSEST');if(flags.origin)badges.push(`ORIGIN: ${destinationAirport}`);if(flags.destination)badges.push(`DESTINATION: ${destinationAirport}`);const route=(t.route_origin||t.route_destination)?`${esc(t.route_origin||'—')}${t.route_origin_name?` (${esc(t.route_origin_name)})`:''} → ${esc(t.route_destination||'—')}${t.route_destination_name?` (${esc(t.route_destination_name)})`:''}`:null;const enriched=[tail?`<span>Registration</span><b>${esc(tail)}</b>`:'',type?`<span>Aircraft</span><b>${esc(type)}</b>`:'',route?`<span>Route</span><b>${route}</b>`:'',t.distance_display?`<span>Distance</span><b>${esc(t.distance_display)}</b>`:''].join('');const badgeHtml=badges.length?`<div class="ac-flags">${badges.map(x=>`<b>${esc(x)}</b>`).join(' · ')}</div>`:'';const trackText=orientation.degrees==null?'—':`${orientation.degrees.toFixed(1)}°${orientation.source==='calculated'?' (course)':''}`;return `<div class="ac-title">${esc(title)}</div>${badgeHtml}<div class="ac-grid">${enriched}<span>ICAO</span><b>${esc(ac.hex.toUpperCase())}</b><span>Altitude</span><b>${altitude(ac.alt_baro)}</b><span>Ground speed</span><b>${fmt(ac.gs,' kt')}</b><span>Track/course</span><b>${trackText}</b><span>Vertical rate</span><b>${signed(ac.baro_rate)}</b><span>Squawk</span><b>${fmt(ac.squawk)}</b><span>Last message</span><b>${fmt(ac.seen,' sec')}</b><span>Last position</span><b>${fmt(ac.seen_pos,' sec')}</b></div>`}
+function icon(track,flags){const d=Number.isFinite(Number(track))?Number(track):0,visual=d-45,classes=['plane'];if(flags.military)classes.push('military');if(flags.closest)classes.push('closest');if(flags.origin)classes.push('origin');if(flags.destination)classes.push('destination');return L.divIcon({className:'',html:`<div class="${classes.join(' ')}" style="transform:rotate(${visual}deg);--counter-rotation:${-visual}deg">✈</div>`,iconSize:[24,24],iconAnchor:[12,12]})}
+function fitAircraft(){if(lastBounds&&lastBounds.isValid())map.fitBounds(lastBounds.pad(.08),{maxZoom:10})}document.getElementById('fit').addEventListener('click',fitAircraft);
+function renderInfo(s){if(!s){infoEl.innerHTML='<span>Status</span><span class="bad">Unavailable</span>';return}const cls=s.feed_status==='ok'?'ok':(s.feed_status==='degraded'?'degraded':'bad');const rows=[['Feed',`<b class="${cls}">${esc(String(s.feed_status||'unknown').toUpperCase())}</b>`],['Source',esc(s.source)],['Receiver',esc(s.receiver)],['Messages',s.messages_received!=null?Number(s.messages_received).toLocaleString():'—'],['Message rate',s.message_rate_per_second!=null?`${esc(s.message_rate_per_second)} / sec`:'—'],['Aircraft',esc(s.aircraft_total)],['With position',esc(s.aircraft_with_position)],['Without position',esc(s.aircraft_without_position)],['Parse errors',s.parse_errors!=null?esc(s.parse_errors):'—'],['Reconnects',s.reconnections!=null?esc(s.reconnections):'—'],['Tracker',enrichment.available?'Detected / active':'Not detected'],['O/D airport',destinationAirport||'—'],['Uptime',duration(s.uptime_seconds)]];infoEl.innerHTML=rows.map(([k,v])=>`<span>${esc(k)}</span><span>${v}</span>`).join('')}
 function homeIcon(){return L.divIcon({className:'',html:'<div class="home-marker">⌂</div>',iconSize:[26,26],iconAnchor:[13,13]})}
 async function refreshHome(){try{const r=await fetch('map-config',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),h=c?.home;destinationAirport=c?.destination_airport||null;if(!h)return;const lat=Number(h.latitude),lon=Number(h.longitude),radius=Number(h.radius||0);if(!Number.isFinite(lat)||!Number.isFinite(lon))return;if(!homeMarker)homeMarker=L.marker([lat,lon],{icon:homeIcon(),zIndexOffset:1000}).addTo(map).bindPopup('<b>Home</b>');else homeMarker.setLatLng([lat,lon]);if(radius>0){if(!homeCircle)homeCircle=L.circle([lat,lon],{radius,weight:1,fillOpacity:.05}).addTo(map);else{homeCircle.setLatLng([lat,lon]);homeCircle.setRadius(radius)}}}catch(err){console.warn('Home marker unavailable',err)}}
-async function refreshEnrichment(){try{const r=await fetch('tracker-enrichment',{cache:'no-store'});if(r.ok)enrichment=await r.json()}catch(err){enrichment={available:false,closest_hex:null,military_hexes:[],destination_hexes:[]}}}
-async function refresh(){try{const [ar,sr,er]=await Promise.all([fetch('data/aircraft.json',{cache:'no-store'}),fetch('status',{cache:'no-store'}),fetch('tracker-enrichment',{cache:'no-store'})]);if(er.ok)enrichment=await er.json();else enrichment={available:false,closest_hex:null,military_hexes:[],destination_hexes:[]};if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),status=sr.ok?await sr.json():null,active=new Set(),points=[];for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);const flags=flagsFor(key);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(ac.track,flags)}).addTo(map);markers.set(key,m)}else{m.setLatLng([lat,lon]);m.setIcon(icon(ac.track,flags))}m.bindPopup(popup(ac,flags))}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}lastBounds=points.length?L.latLngBounds(points):null;if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refresh();setInterval(refresh,1000)})();
+async function refreshEnrichment(){try{const r=await fetch('tracker-enrichment',{cache:'no-store'});if(r.ok)enrichment=await r.json()}catch(err){enrichment={available:false,closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}}}}
+async function refresh(){try{const [ar,sr,er]=await Promise.all([fetch('data/aircraft.json',{cache:'no-store'}),fetch('status',{cache:'no-store'}),fetch('tracker-enrichment',{cache:'no-store'})]);if(er.ok)enrichment=await er.json();else enrichment={available:false,closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),status=sr.ok?await sr.json():null,active=new Set(),points=[];for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);const flags=flagsFor(key),orientation=displayTrack(key,ac,lat,lon);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(orientation.degrees,flags)}).addTo(map);m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false});markers.set(key,m)}else{m.setLatLng([lat,lon]);m.setIcon(icon(orientation.degrees,flags));if(m.getPopup())m.setPopupContent(popup(ac,flags,key,orientation));else m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false})}}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}lastBounds=points.length?L.latLngBounds(points):null;if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refresh();setInterval(refresh,1000)})();
 </script></body></html>
 '''
 
@@ -846,6 +871,7 @@ a{{color:#7db7ff}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color
 <tr><td>Connection attempts</td><td>{s['connection_attempts']}</td></tr><tr><td>Reconnections</td><td>{s['reconnections']}</td></tr>"""
             html = common + source_rows + f"""<tr><td>Aircraft total</td><td>{s['aircraft_total']}</td></tr>
 <tr><td>Aircraft with position</td><td>{s['aircraft_with_position']}</td></tr><tr><td>Aircraft without position</td><td>{s['aircraft_without_position']}</td></tr>
+<tr><td>ADSB Aircraft Tracker</td><td>{'Detected / active' if refresh_tracker_enrichment().get('available') else 'Not detected'}</td></tr><tr><td>O/D airport</td><td>{CFG['destination_airport'] or 'Not configured'}</td></tr>
 <tr><td>HTTP requests served</td><td>{s['requests_served']}</td></tr><tr><td>Uptime</td><td>{s['uptime_seconds']} sec</td></tr></table>
 <h2>Navigation</h2><p><a href=\"./\">Raw ADS-B Map</a></p><h2>Endpoints</h2><p><a href=\"data/aircraft.json\">/data/aircraft.json</a><br><a href=\"aircraft.json\">/aircraft.json</a><br><a href=\"status\">/status</a><br><a href=\"health\">/health</a></p>
 <p><small>This page refreshes every 5 seconds.</small></p></body></html>"""
@@ -869,6 +895,9 @@ def main():
         print(f"Input source: dump1090/readsb aircraft.json at {CFG['aircraft_json_url']}", flush=True)
         print(f"Poll interval: {CFG['aircraft_json_poll_interval']} seconds", flush=True)
         threading.Thread(target=aircraft_json_updater, daemon=True).start()
+    refresh_tracker_enrichment(force=True)
+    if CFG["destination_airport"]:
+        print(f"[INFO] Airport origin/destination highlighting enabled: {CFG['destination_airport']}", flush=True)
     print(f"Serving on {LISTEN_HOST}:{LISTEN_PORT}", flush=True)
     ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler).serve_forever()
 

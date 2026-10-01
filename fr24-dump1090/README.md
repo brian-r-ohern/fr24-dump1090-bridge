@@ -28,7 +28,7 @@ Source selection is explicit: exactly one aircraft source is active at a time. T
 
 The bridge provides a self-contained **Raw ADS-B Map** through Home Assistant Ingress.
 
-Aircraft positions are displayed directly from the currently selected source. When ADSB Aircraft Tracker is installed, v0.5.0 can optionally use its Home Assistant entities for map-only military, closest-aircraft, and configured destination-airport highlighting. Tracker enrichment never changes the normalized aircraft feed, and the map retains its existing behavior when Tracker data is unavailable.
+Aircraft positions are displayed directly from the currently selected source. When ADSB Aircraft Tracker is installed, v0.5.0 can optionally use its Home Assistant entities for map-only military, closest-aircraft, and configured origin/destination-airport highlighting and richer aircraft popups. Tracker enrichment never changes the normalized aircraft feed, and the map retains its existing behavior when Tracker data is unavailable.
 
 When available, the map can also obtain the location of Home Assistant's `zone.home` through the Home Assistant API and display it as a Home marker.
 

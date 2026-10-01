@@ -43,7 +43,7 @@ The last good snapshot remains available during temporary upstream failures. Sou
 
 v0.5.0 can use the Home Assistant entities provided by **ADSB Aircraft Tracker** to enrich the Raw ADS-B Map. Tracker remains optional and is not an aircraft input source. The bridge matches Tracker information to currently mapped aircraft by ICAO `hex` only.
 
-When Tracker data is available, military aircraft are shown in green and Tracker's current closest aircraft receives a red halo. An optional **Destination airport highlight** setting accepts an IATA airport code and marks aircraft whose Tracker `route_destination` matches that code. These states can overlap on the same aircraft.
+When Tracker data is available, military aircraft are shown in green and Tracker's current closest aircraft receives a red halo. An optional **Origin/destination airport highlight** setting accepts an IATA airport code and marks aircraft with **O** when Tracker `route_origin` matches or **D** when `route_destination` matches. Tracker metadata also enriches aircraft popups when available. These states can overlap on the same aircraft. The map uses reported track when available and derives course over ground from successive positions as a fallback for stale/missing orientation.
 
 Tracker enrichment is presentation-only. It does not modify `/aircraft.json` or `/data/aircraft.json`, does not merge aircraft sources, and does not duplicate Tracker's military or route logic. If Tracker is not installed, its entities are unavailable, or enrichment cannot be read, the map retains the v0.4.0 appearance and behavior.
 
