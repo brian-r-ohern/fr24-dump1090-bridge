@@ -21,6 +21,7 @@ ports:
 ports_description:
   8085/tcp: "FR24 dump1090 bridge HTTP service (optional LAN exposure)"
 options:
+  receiver_host: ""
   source: "sbs_30003"
   receiver_port: 80
   sbs_port: 30003
