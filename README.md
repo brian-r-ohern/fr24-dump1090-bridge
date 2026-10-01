@@ -106,6 +106,21 @@ Home Assistant `zone.home` coordinates are used only for Raw ADS-B Map presentat
 
 The aircraft feed is unauthenticated. Keep port 8085 internal unless LAN access is actually required.
 
+The App runs under a Home Assistant AppArmor profile. The v0.4.0 profile has been tested with all three supported input modes: SBS/BaseStation TCP, FR24 `flights.js`, and standard dump1090/readsb `aircraft.json`.
+
+| Capability | AppArmor access | Verified |
+|---|---|---|
+| SBS/BaseStation TCP input | IPv4/IPv6 stream networking | ✅ |
+| FR24 `flights.js` input | HTTP + Digest authentication | ✅ |
+| dump1090/readsb `aircraft.json` input | HTTP/HTTPS polling | ✅ |
+| Bridge HTTP service | TCP/8085 | ✅ |
+| OpenStreetMap tile proxy | HTTPS networking + `/data` cache | ✅ |
+| Home Assistant `zone.home` lookup | Supervisor/Core API | ✅ |
+| Persistent App data/cache | `/data/**` | ✅ |
+| DNS resolution | IPv4/IPv6 datagram networking | ✅ |
+
+The App does not require raw sockets, host filesystem access, Docker access, `/config`, `/share`, `/media`, `/ssl`, `/backup`, `mount`, or `ptrace`.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
