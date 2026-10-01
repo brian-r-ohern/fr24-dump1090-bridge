@@ -1,10 +1,13 @@
 # FR24 dump1090 Bridge for Home Assistant
 <img width="256" height="256" alt="Concept1" src="https://github.com/user-attachments/assets/b0ca6d94-d950-4c36-82c2-39d909fb79ba" />
 
-A Home Assistant App that normalizes an explicitly selected aircraft data source (including a local Flightradar24 ADS-B receiver) into conservative dump1090/readsb-compatible `aircraft.json` endpoints.
+FR24 dump1090 Bridge functions as a lightweight, non-invasive local aircraft-data layer for Home Assistant:
+- 🗺️ Live Visualization: Displays aircraft on an interactive, real-time map with live statistics.
+- ⚙️ Normalization: Accepts one explicitly selected source and publishes consistent dump1090/readsb-compatible aircraft.json endpoints.
+- 🔒 Zero Interference: It does not alter an FR24 receiver's normal upstream feed, replace receiver hardware, or attempt to decode raw ADS-B RF signals.
+If you're looking for a lightweight way to visualize and expose local aircraft data inside Home Assistant, check out the repository.
 
-The recommended/default input is a receiver's **SBS/BaseStation TCP feed on port 30003**. The receiver's authenticated `/flights.js` web feed and a standard dump1090/readsb `aircraft.json` URL are available as mutually exclusive alternate sources. 
-The bridge does **not** decode ADS-B RF data, does not replace the FR24 receiver, and does not interact with or modify the receiver's normal FR24 uplink.
+The recommended/default input is a receiver's SBS/BaseStation TCP feed on port 30003. An authenticated FR24 /flights.js feed or an existing dump1090/readsb aircraft.json feed can be selected as mutually exclusive alternatives. An FR24 receiver is therefore not required when a compatible aircraft.json source is already available.
 
 ## Home Assistant installation
 
