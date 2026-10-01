@@ -114,3 +114,8 @@ If another Home Assistant integration cannot reach the bridge, verify the
 installed app's internal hostname and use port `8085`. The hostname assigned
 to a GitHub-installed app differs from the `local-` hostname used for local
 development installations.
+
+## Maximum observed range coverage
+
+The Raw ADS-B Map learns a persistent receiver-coverage outline from the selected bridge aircraft source. Positioned aircraft are measured from Home Assistant `zone.home` and assigned to 360 one-degree bearing bins. Each bin retains only its farthest observed aircraft. The map connects successive populated bins, including across currently empty bearings, without storing synthetic observations. Coverage is saved under `/data` and continues learning across app and HAOS restarts.
+

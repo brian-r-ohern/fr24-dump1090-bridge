@@ -52,3 +52,8 @@ Existing consumers such as **ADSB Aircraft Tracker for Home Assistant** can cont
 Process health and aircraft-source health are intentionally separate. A temporary loss of the selected aircraft source does not by itself mean that the bridge process has failed.
 
 See the app Documentation tab for detailed configuration, source behavior, Home Assistant integration, security, and compatibility information.
+
+## Maximum observed range coverage
+
+The Raw ADS-B Map learns a persistent receiver-coverage outline from the selected bridge aircraft source. Positioned aircraft are measured from Home Assistant `zone.home` and assigned to 360 one-degree bearing bins. Each bin retains only its farthest observed aircraft. The map connects successive populated bins, including across currently empty bearings, without storing synthetic observations. Coverage is saved under `/data` and continues learning across app and HAOS restarts.
+

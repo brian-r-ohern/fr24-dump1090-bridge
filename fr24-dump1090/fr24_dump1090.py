@@ -3,6 +3,7 @@
 
 import ast
 import json
+import math
 import os
 import re
 import socket
@@ -27,10 +28,10 @@ SBS_SOCKET_TIMEOUT = 5.0
 VALID_SOURCES = ("sbs_30003", "flights_js", "aircraft_json")
 OSM_TILE_BASE = "https://tile.openstreetmap.org"
 OSM_TILE_CACHE = os.environ.get("FR24_TILE_CACHE", "/data/map-tile-cache-v2")
-OSM_TILE_USER_AGENT = "FR24-dump1090-Bridge/0.5.0 (+https://github.com/brian-r-ohern/fr24-dump1090-bridge)"
+OSM_TILE_USER_AGENT = "FR24-dump1090-Bridge/0.5.1 (+https://github.com/brian-r-ohern/fr24-dump1090-bridge)"
 OSM_TILE_FALLBACK_TTL = 7 * 24 * 60 * 60
 OSM_TILE_TIMEOUT = 10
-TILE_PROXY_BUILD = "v0.5.0"
+TILE_PROXY_BUILD = "v0.5.1"
 tile_proxy_requests = 0
 tile_proxy_cache_hits = 0
 tile_proxy_upstream_fetches = 0
@@ -109,6 +110,18 @@ tracker_enrichment_last_attempt = 0.0
 tracker_enrichment_cache_seconds = 2.0
 tracker_available_logged = None
 tracker_ever_detected = False
+
+# Persistent empirical receiver-coverage envelope. Each integer bearing bin
+# retains only the farthest aircraft position ever observed in that 1-degree
+# sector. Empty bins remain empty on disk; the map simply connects successive
+# populated bins to form a continuous observed-range outline.
+COVERAGE_PATH = os.environ.get("FR24_COVERAGE_PATH", "/data/range-coverage.json")
+COVERAGE_FLUSH_SECONDS = 30.0
+coverage_bins = [None] * 360
+coverage_dirty = False
+coverage_generation = 0
+coverage_last_flush = 0.0
+coverage_loaded = False
 
 # SBS/BaseStation source state. Each field carries the newest value observed for
 # an ICAO address; last_seen and position_seen retain independent ages.
@@ -437,6 +450,138 @@ def map_config():
     return {"home": marker, "destination_airport": CFG["destination_airport"] or None}
 
 
+def _coverage_distance_bearing(lat1, lon1, lat2, lon2):
+    """Return great-circle distance in nautical miles and initial bearing."""
+    r_nm = 3440.065
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    distance_nm = r_nm * 2 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    bearing = (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+    return distance_nm, bearing
+
+
+def load_coverage():
+    global coverage_bins, coverage_loaded
+    try:
+        with open(COVERAGE_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        bins = payload.get("bins", []) if isinstance(payload, dict) else []
+        loaded = [None] * 360
+        if isinstance(bins, list):
+            for item in bins:
+                if not isinstance(item, dict):
+                    continue
+                bearing = item.get("bearing")
+                distance = item.get("distance_nm")
+                if isinstance(bearing, int) and 0 <= bearing < 360 and isinstance(distance, (int, float)) and distance >= 0:
+                    loaded[bearing] = item
+        with lock:
+            coverage_bins = loaded
+            coverage_loaded = True
+        print(f"[INFO] Coverage history loaded: {sum(x is not None for x in loaded)}/360 bearing bins", flush=True)
+    except FileNotFoundError:
+        with lock:
+            coverage_loaded = True
+        print("[INFO] Coverage history initialized: 0/360 bearing bins", flush=True)
+    except Exception as exc:
+        with lock:
+            coverage_loaded = True
+        print(f"[WARN] Coverage history could not be loaded; starting empty: {exc}", flush=True)
+
+
+def flush_coverage(force=False):
+    global coverage_dirty, coverage_last_flush
+    now = time.time()
+    with lock:
+        if not coverage_dirty and not force:
+            return
+        if not force and now - coverage_last_flush < COVERAGE_FLUSH_SECONDS:
+            return
+        bins = [dict(item) for item in coverage_bins if item is not None]
+        generation = coverage_generation
+    payload = {"version": 1, "bin_degrees": 1, "updated": iso_utc(now), "bins": bins}
+    tmp = COVERAGE_PATH + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(COVERAGE_PATH) or ".", exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, COVERAGE_PATH)
+        with lock:
+            if coverage_generation == generation:
+                coverage_dirty = False
+            coverage_last_flush = now
+    except Exception as exc:
+        print(f"[WARN] Coverage history could not be saved: {exc}", flush=True)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def update_coverage_from_snapshot():
+    global coverage_dirty, coverage_generation
+    with lock:
+        marker = dict(home_marker) if home_marker else None
+        aircraft = list(latest_data.get("aircraft", []))
+    if not marker:
+        return
+    home_lat, home_lon = marker["latitude"], marker["longitude"]
+    changed = False
+    observed = iso_utc(time.time())
+    for ac in aircraft:
+        try:
+            lat, lon = float(ac["lat"]), float(ac["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        distance_nm, bearing = _coverage_distance_bearing(home_lat, home_lon, lat, lon)
+        bin_no = int(round(bearing)) % 360
+        with lock:
+            current = coverage_bins[bin_no]
+            if current is not None and float(current.get("distance_nm", -1)) >= distance_nm:
+                continue
+            coverage_bins[bin_no] = {
+                "bearing": bin_no,
+                "distance_nm": round(distance_nm, 2),
+                "latitude": round(lat, 6),
+                "longitude": round(lon, 6),
+                "hex": str(ac.get("hex", "")).strip().lower() or None,
+                "flight": str(ac.get("flight", "")).strip() or None,
+                "altitude_ft": ac.get("alt_baro"),
+                "observed": observed,
+            }
+            coverage_dirty = True
+            coverage_generation += 1
+            changed = True
+    if changed:
+        flush_coverage()
+
+
+def coverage_updater():
+    load_coverage()
+    while True:
+        try:
+            update_coverage_from_snapshot()
+            flush_coverage()
+        except Exception as exc:
+            print(f"[WARN] Coverage update failed: {exc}", flush=True)
+        time.sleep(1)
+
+
+def coverage_payload():
+    with lock:
+        bins = [dict(item) for item in coverage_bins if item is not None]
+    return {"available": bool(home_marker), "bin_degrees": 1, "populated_bins": len(bins), "total_bins": 360, "bins": bins}
+
+
 def _entity_attributes(entity_id):
     state = _supervisor_core_request(f"/states/{entity_id}")
     attrs = state.get("attributes", {}) if isinstance(state, dict) else {}
@@ -746,7 +891,7 @@ html,body,#map{height:100%;margin:0;background:#111;font-family:system-ui,-apple
 @media (max-width:600px){.topbar{left:8px;right:8px;top:8px;transform:none;white-space:normal;display:grid;grid-template-columns:1fr auto;gap:4px 8px;padding:7px 9px}.topbar strong{min-width:0}.topbar .stats{grid-column:1 / -1;grid-row:2}.topbar .btn{grid-column:2;grid-row:1}.info{right:6px;bottom:20px;max-width:calc(100vw - 32px)}}
 </style></head><body><div id="map"></div><div class="topbar"><strong>Raw ADS-B Map</strong><span id="stats" class="stats">Loading aircraft…</span><button class="btn" id="fit">Fit aircraft</button></div><div class="info"><div class="info-title">Bridge status</div><div id="info-grid" class="info-grid"><span>Feed</span><span>Loading…</span></div><div class="nav"><a href="status-page">Status</a> · <a href="data/aircraft.json">aircraft.json</a></div></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
-(()=>{const map=L.map('map',{zoomControl:true}).setView([39.5,-98.35],4);const tileTemplate='tiles/{z}/{x}/{y}.png?ref_origin='+encodeURIComponent(window.location.origin);const tiles=L.tileLayer(tileTemplate,{maxZoom:19,tileSize:256,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});tiles.on('tileerror',e=>console.warn('FR24 tile proxy error',e?.tile?.src||e));tiles.addTo(map);const markers=new Map();let homeMarker=null,homeCircle=null;let initialFit=false,lastBounds=null;let enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};let destinationAirport=null;const statsEl=document.getElementById('stats'),infoEl=document.getElementById('info-grid');const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=(v,s='')=>(v===undefined||v===null||v==='')?'—':`${esc(v)}${s}`;const altitude=v=>v==='ground'?'Ground':(v===undefined||v===null?'—':`${Number(v).toLocaleString()} ft`);const signed=v=>(v===undefined||v===null)?'—':`${Number(v)>0?'+':''}${Number(v).toLocaleString()} ft/min`;const duration=v=>{v=Number(v);if(!Number.isFinite(v))return '—';const h=Math.floor(v/3600),m=Math.floor((v%3600)/60);return h?`${h}h ${m}m`:`${m}m`};
+(()=>{const map=L.map('map',{zoomControl:true}).setView([39.5,-98.35],4);const tileTemplate='tiles/{z}/{x}/{y}.png?ref_origin='+encodeURIComponent(window.location.origin);const tiles=L.tileLayer(tileTemplate,{maxZoom:19,tileSize:256,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});tiles.on('tileerror',e=>console.warn('FR24 tile proxy error',e?.tile?.src||e));tiles.addTo(map);const markers=new Map();let homeMarker=null,homeCircle=null,coverageLine=null;let initialFit=false,lastBounds=null;let enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};let destinationAirport=null;const statsEl=document.getElementById('stats'),infoEl=document.getElementById('info-grid');const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=(v,s='')=>(v===undefined||v===null||v==='')?'—':`${esc(v)}${s}`;const altitude=v=>v==='ground'?'Ground':(v===undefined||v===null?'—':`${Number(v).toLocaleString()} ft`);const signed=v=>(v===undefined||v===null)?'—':`${Number(v)>0?'+':''}${Number(v).toLocaleString()} ft/min`;const duration=v=>{v=Number(v);if(!Number.isFinite(v))return '—';const h=Math.floor(v/3600),m=Math.floor((v%3600)/60);return h?`${h}h ${m}m`:`${m}m`};
 function flagsFor(key){const military=new Set(enrichment.military_hexes||[]),origin=new Set(enrichment.origin_hexes||[]),destination=new Set(enrichment.destination_hexes||[]);return{military:military.has(key),closest:enrichment.closest_hex===key,origin:origin.has(key),destination:destination.has(key)}}
 function trackerFor(key){return(enrichment.aircraft||{})[key]||{}}
 function bearing(a,b){const r=Math.PI/180,p1=a.lat*r,p2=b.lat*r,dl=(b.lon-a.lon)*r,y=Math.sin(dl)*Math.cos(p2),x=Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl);return(Math.atan2(y,x)/r+360)%360}
@@ -761,7 +906,8 @@ function renderInfo(s){if(!s){infoEl.innerHTML='<span>Status</span><span class="
 function homeIcon(){return L.divIcon({className:'',html:'<div class="home-marker">⌂</div>',iconSize:[26,26],iconAnchor:[13,13]})}
 async function refreshHome(){try{const r=await fetch('map-config',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),h=c?.home;destinationAirport=c?.destination_airport||null;if(!h)return;const lat=Number(h.latitude),lon=Number(h.longitude),radius=Number(h.radius||0);if(!Number.isFinite(lat)||!Number.isFinite(lon))return;if(!homeMarker)homeMarker=L.marker([lat,lon],{icon:homeIcon(),zIndexOffset:1000}).addTo(map).bindPopup('<b>Home</b>');else homeMarker.setLatLng([lat,lon]);if(radius>0){if(!homeCircle)homeCircle=L.circle([lat,lon],{radius,weight:1,fillOpacity:.05}).addTo(map);else{homeCircle.setLatLng([lat,lon]);homeCircle.setRadius(radius)}}}catch(err){console.warn('Home marker unavailable',err)}}
 async function refreshEnrichment(){try{const r=await fetch('tracker-enrichment',{cache:'no-store'});if(r.ok)enrichment=await r.json()}catch(err){enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}}}}
-async function refresh(){try{const [ar,sr,er]=await Promise.all([fetch('data/aircraft.json',{cache:'no-store'}),fetch('status',{cache:'no-store'}),fetch('tracker-enrichment',{cache:'no-store'})]);if(er.ok)enrichment=await er.json();else enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),status=sr.ok?await sr.json():null,active=new Set(),points=[];for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);const flags=flagsFor(key),orientation=displayTrack(key,ac,lat,lon);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(orientation.degrees,flags)}).addTo(map);m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false});markers.set(key,m)}else{m.setLatLng([lat,lon]);m.setIcon(icon(orientation.degrees,flags));if(m.getPopup())m.setPopupContent(popup(ac,flags,key,orientation));else m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false})}}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}lastBounds=points.length?L.latLngBounds(points):null;if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refresh();setInterval(refresh,1000)})();
+async function refreshCoverage(){try{const r=await fetch('range-coverage',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),bins=Array.isArray(c.bins)?c.bins:[];const pts=bins.filter(x=>Number.isFinite(Number(x.latitude))&&Number.isFinite(Number(x.longitude))).sort((a,b)=>Number(a.bearing)-Number(b.bearing)).map(x=>[Number(x.latitude),Number(x.longitude)]);if(pts.length>=2){if(!coverageLine)coverageLine=L.polyline(pts.concat([pts[0]]),{color:'#ff9f1c',weight:2,opacity:.85,interactive:false}).addTo(map);else coverageLine.setLatLngs(pts.concat([pts[0]]))}else if(coverageLine){map.removeLayer(coverageLine);coverageLine=null}}catch(err){console.warn('Coverage outline unavailable',err)}}
+async function refresh(){try{const [ar,sr,er]=await Promise.all([fetch('data/aircraft.json',{cache:'no-store'}),fetch('status',{cache:'no-store'}),fetch('tracker-enrichment',{cache:'no-store'})]);if(er.ok)enrichment=await er.json();else enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),status=sr.ok?await sr.json():null,active=new Set(),points=[];for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);const flags=flagsFor(key),orientation=displayTrack(key,ac,lat,lon);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(orientation.degrees,flags)}).addTo(map);m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false});markers.set(key,m)}else{m.setLatLng([lat,lon]);m.setIcon(icon(orientation.degrees,flags));if(m.getPopup())m.setPopupContent(popup(ac,flags,key,orientation));else m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false})}}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}lastBounds=points.length?L.latLngBounds(points):null;if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refreshCoverage();setInterval(refreshCoverage,5000);refresh();setInterval(refresh,1000)})();
 </script></body></html>
 '''
 
@@ -842,6 +988,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/tracker-enrichment":
             self.send_json(refresh_tracker_enrichment())
             return
+        if path == "/range-coverage":
+            self.send_json(coverage_payload())
+            return
         if path in ("/aircraft.json", "/data/aircraft.json"):
             with lock:
                 payload = latest_data
@@ -894,6 +1043,7 @@ a{{color:#7db7ff}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color
 
 def main():
     threading.Thread(target=home_marker_updater, daemon=True).start()
+    threading.Thread(target=coverage_updater, daemon=True).start()
     if CFG["source"] == "sbs_30003":
         print(f"Input source: SBS/BaseStation TCP {CFG['receiver_host']}:{CFG['sbs_port']}", flush=True)
         print(f"Snapshot interval: {SBS_SNAPSHOT_INTERVAL} second", flush=True)

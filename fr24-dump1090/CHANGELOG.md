@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+- Add a persistent 360-degree maximum-observed-range coverage outline to the Raw ADS-B Map.
+- Record the farthest positioned aircraft observed in each 1-degree bearing bin from `zone.home`.
+- Persist coverage records under `/data` so the learned envelope survives app and HAOS restarts.
+- Connect successive populated bearing bins on the map, spanning empty bins visually without creating synthetic observations.
+- Continuously expand a bearing bin only when a farther aircraft is observed; records never shrink automatically.
+- Keep coverage collection independent of optional ADSB Aircraft Tracker enrichment.
+
+
 ## 0.5.0
 
 - Add optional Raw ADS-B Map enrichment from ADSB Aircraft Tracker when its Home Assistant entities are available.
