@@ -4,7 +4,6 @@ slug: "fr24_dump1090"
 description: >-
   Normalizes a selected local aircraft data source into
   dump1090/readsb-compatible aircraft.json endpoints.
-  Choose exactly one aircraft source. After selecting a source, enable Show unused optional configuration options below to enter the source-specific connection settings.
 url: "https://github.com/brian-r-ohern/fr24-dump1090-bridge"
 arch:
   - amd64
