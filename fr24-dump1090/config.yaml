@@ -1,5 +1,5 @@
 name: "FR24 dump1090 Bridge"
-version: "0.4.0"
+version: "0.5.0"
 slug: "fr24_dump1090"
 description: >-
   Normalizes a selected local aircraft data source into
@@ -39,3 +39,4 @@ schema:
   request_timeout: "int(1,30)?"
   aircraft_json_url: str?
   aircraft_json_poll_interval: "int(1,60)?"
+  destination_airport: str?

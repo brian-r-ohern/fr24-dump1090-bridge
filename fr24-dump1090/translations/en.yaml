@@ -29,5 +29,8 @@ configuration:
   request_timeout:
     name: HTTP request timeout
     description: Maximum seconds to wait for each HTTP request attempt in flights.js mode.
+  destination_airport:
+    name: Destination airport highlight
+    description: Optional IATA airport code (for example, SYR) to highlight aircraft whose ADSB Aircraft Tracker route destination matches.
 network:
   8085/tcp: FR24 dump1090/readsb-compatible HTTP service

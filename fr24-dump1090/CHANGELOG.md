@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Add optional Raw ADS-B Map enrichment from ADSB Aircraft Tracker when its Home Assistant entities are available.
+- Highlight Tracker-classified military aircraft in green.
+- Add a red halo to Tracker's current closest aircraft.
+- Add an optional configured destination-airport highlight using Tracker route destination data.
+- Match enrichment to bridge aircraft only by ICAO hex; the selected bridge source remains authoritative for map position/state.
+- Keep `/aircraft.json` and `/data/aircraft.json` unchanged by Tracker enrichment.
+- Preserve the v0.4.0 Raw ADS-B Map behavior when ADSB Aircraft Tracker is absent or unavailable.
+
 ## 0.4.0
 
 - Add a third mutually exclusive input source for a standard dump1090/readsb `aircraft.json` URL.

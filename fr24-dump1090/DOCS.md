@@ -39,6 +39,14 @@ The `aircraft_json` source polls the configured `aircraft_json_url` and republis
 
 The last good snapshot remains available during temporary upstream failures. Source selection is explicit; the bridge does not merge sources and does not automatically fail over between them.
 
+## Optional ADSB Aircraft Tracker map enrichment
+
+v0.5.0 can use the Home Assistant entities provided by **ADSB Aircraft Tracker** to enrich the Raw ADS-B Map. Tracker remains optional and is not an aircraft input source. The bridge matches Tracker information to currently mapped aircraft by ICAO `hex` only.
+
+When Tracker data is available, military aircraft are shown in green and Tracker's current closest aircraft receives a red halo. An optional **Destination airport highlight** setting accepts an IATA airport code and marks aircraft whose Tracker `route_destination` matches that code. These states can overlap on the same aircraft.
+
+Tracker enrichment is presentation-only. It does not modify `/aircraft.json` or `/data/aircraft.json`, does not merge aircraft sources, and does not duplicate Tracker's military or route logic. If Tracker is not installed, its entities are unavailable, or enrichment cannot be read, the map retains the v0.4.0 appearance and behavior.
+
 ## Home marker
 
 v0.4.0 requests `zone.home` from Home Assistant through the supported Supervisor/Core API proxy enabled by `homeassistant_api: true`. When latitude and longitude are available, the Raw ADS-B Map displays a Home marker and the zone radius. The coordinates are used only by the map presentation path and are not added to `/status`, `/aircraft.json`, logs, or tile diagnostics. If `zone.home` cannot be read, aircraft mapping continues normally without a Home marker.
@@ -53,7 +61,7 @@ Consumers can use `/aircraft.json` or `/data/aircraft.json` as required.
 
 ## Home Assistant web UI (Ingress)
 
-The app supports Home Assistant Ingress for the **Raw ADS-B Map**, which is the default web interface in v0.4.0. Use **Open Web UI** from the app Info page to open the map through Home Assistant without publishing port `8085` to the LAN.
+The app supports Home Assistant Ingress for the **Raw ADS-B Map**, which is the default web interface in v0.5.0. Use **Open Web UI** from the app Info page to open the map through Home Assistant without publishing port `8085` to the LAN.
 
 If desired, enable **Show in sidebar** on the app Info page for direct access from the Home Assistant sidebar. The detailed human-readable status page is available from the map or at `/status-page`. Integrations such as ADSB Aircraft Tracker can continue to use the app's internal hostname and port `8085`.
 
