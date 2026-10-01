@@ -12,7 +12,7 @@ The recommended/default input is a receiver's SBS/BaseStation TCP feed on port 3
 ## Home Assistant installation
 
 1. In Home Assistant, open **Settings → Apps → Install app**.
-2. Open the repository menu and add: `https://github.com/brian-r-ohern/fr24-dump1090-bridge`
+2. Open the three-dot menu in the upper-right, select Repositories, and add: https://github.com/brian-r-ohern/fr24-dump1090-bridge 
 3. Refresh/reload the App Store if necessary.
 4. Install **FR24 dump1090 Bridge**.
 5. Choose exactly one aircraft source. Enable **Show unused optional configuration options** to enter the source-specific connection settings.
