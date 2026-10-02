@@ -1082,7 +1082,18 @@ a{{color:#7db7ff}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color
 <tr><td>Aircraft with position</td><td>{s['aircraft_with_position']}</td></tr><tr><td>Aircraft without position</td><td>{s['aircraft_without_position']}</td></tr>
 <tr><td>ADSB Aircraft Tracker</td><td>{(lambda e: 'Detected / active' if e.get('tracker_state') == 'active' else ('Temporarily unavailable' if e.get('tracker_state') == 'unavailable' else 'Awaiting detection'))(refresh_tracker_enrichment())}</td></tr><tr><td>O/D airport</td><td>{CFG['destination_airport'] or 'Not configured'}</td></tr>
 <tr><td>HTTP requests served</td><td>{s['requests_served']}</td></tr><tr><td>Uptime</td><td>{s['uptime_seconds']} sec</td></tr></table>
-<h2>Navigation</h2><p><a href=\"./\">Raw ADS-B Map</a></p><h2>Endpoints</h2><p><a href=\"data/aircraft.json\">/data/aircraft.json</a><br><a href=\"aircraft.json\">/aircraft.json</a><br><a href=\"status\">/status</a><br><a href=\"health\">/health</a></p>
+<h2>Navigation</h2><p><a href=\"./\">Raw ADS-B Map</a></p>
+<h2>Data &amp; API Endpoints</h2><p>
+<a href=\"data/aircraft.json\">/data/aircraft.json</a> &mdash; normalized aircraft data<br>
+<a href=\"aircraft.json\">/aircraft.json</a> &mdash; compatibility aircraft data<br>
+<a href=\"status\">/status</a> &mdash; bridge and feed status<br>
+<a href=\"health\">/health</a> &mdash; health check<br>
+<a href=\"range-coverage\">/range-coverage</a> &mdash; observed range coverage<br>
+<a href=\"tracker-enrichment\">/tracker-enrichment</a> &mdash; ADSB Tracker enrichment<br>
+<a href=\"map-config\">/map-config</a> &mdash; map configuration
+</p>
+<h2>Diagnostics</h2><p><a href=\"tile-debug\">/tile-debug</a> &mdash; map tile proxy diagnostics</p>
+<p><small>Map tiles are served internally through <code>/tiles/{z}/{x}/{y}.png</code>.</small></p>
 <p><small>This page refreshes every 5 seconds.</small></p></body></html>"""
             self.send_html(html)
             return
