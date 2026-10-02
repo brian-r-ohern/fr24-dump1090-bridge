@@ -49,7 +49,7 @@ Tracker enrichment is presentation-only. It does not modify `/aircraft.json` or 
 
 ## Home marker
 
-v0.4.0 requests `zone.home` from Home Assistant through the supported Supervisor/Core API proxy enabled by `homeassistant_api: true`. When latitude and longitude are available, the Raw ADS-B Map displays a Home marker and the zone radius. The coordinates are used only by the map presentation path and are not added to `/status`, `/aircraft.json`, logs, or tile diagnostics. If `zone.home` cannot be read, aircraft mapping continues normally without a Home marker.
+The bridge requests `zone.home` from Home Assistant through the supported Supervisor/Core API proxy enabled by `homeassistant_api: true`. When latitude and longitude are available, the Raw ADS-B Map displays a Home marker and the zone radius. The coordinates are used only by the map presentation path and are not added to `/status`, `/aircraft.json`, logs, or tile diagnostics. If `zone.home` cannot be read, aircraft mapping continues normally without a Home marker.
 
 ## Internal Home Assistant access
 
@@ -74,6 +74,22 @@ The app declares container port 8085 with no host mapping by default. If a clien
 `/status` reports bridge uptime, selected input source, receiver/feed state, aircraft totals, and source-specific statistics. SBS mode reports message rate/count, last-message age, parse errors, and connection/reconnection counts. flights.js and aircraft.json modes report poll timing and success/failure counts. aircraft.json mode also reports upstream message count/rate when the source supplies a cumulative numeric `messages` value.
 
 `/health` intentionally reports process/service health rather than upstream FR24 receiver health.
+
+### HTTP endpoint reference
+
+- `/` — Raw ADS-B Map
+- `/aircraft.json` — dump1090/readsb-compatible aircraft feed
+- `/data/aircraft.json` — compatibility alias for the aircraft feed
+- `/status` — machine-readable bridge and active-source status
+- `/status-page` — human-readable status page
+- `/health` — bridge process/service health
+- `/range-coverage` — observed maximum-range coverage and convergence metadata
+- `/range-coverage.geojson` — live coverage exported as GeoJSON
+- `POST /range-coverage/import` — validated merge/restore of exported coverage JSON
+- `/tracker-enrichment` — optional ADSB Aircraft Tracker map enrichment
+- `/map-config` — map configuration used by the Raw ADS-B Map
+- `/tile-debug` — map tile proxy diagnostics
+- `/tiles/{z}/{x}/{y}.png` — internal map-tile proxy route used by the map
 
 ## Mobile map behavior
 
@@ -114,12 +130,6 @@ If another Home Assistant integration cannot reach the bridge, verify the
 installed app's internal hostname and use port `8085`. The hostname assigned
 to a GitHub-installed app differs from the `local-` hostname used for local
 development installations.
-
-## Maximum observed range coverage
-
-The Raw ADS-B Map learns a persistent receiver-coverage outline from the selected bridge aircraft source. Positioned aircraft are measured from Home Assistant `zone.home` and assigned to 360 one-degree bearing bins. Each bin retains only its farthest observed aircraft. The map connects successive populated bins, including across currently empty bearings, without storing synthetic observations. Coverage is saved under `/data` and continues learning across app and HAOS restarts.
-
-
 
 ## Maximum observed range coverage
 

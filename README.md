@@ -45,21 +45,28 @@ The original v0.1.x path remains available. It polls the receiver's authenticate
 
 The bridge can poll a standard dump1090/readsb `aircraft.json` URL, normalize the snapshot, and publish it through the same bridge endpoints and Raw ADS-B Map.
 
-Source selection is explicit. v0.4.0 uses exactly one source and does not merge or automatically fail over between sources.
+Source selection is explicit. The bridge uses exactly one source and does not merge or automatically fail over between sources.
 
 ## Home marker
 
-v0.4.0 can read Home Assistant `zone.home` through the supported App/Core API proxy and display it on the Raw ADS-B Map. Home coordinates are not included in `/status`, aircraft JSON, logs, or tile diagnostics. If the entity is unavailable, the map continues without the marker.
+The bridge can read Home Assistant `zone.home` through the supported App/Core API proxy and display it on the Raw ADS-B Map. Home coordinates are not included in `/status`, aircraft JSON, logs, or tile diagnostics. If the entity is unavailable, the map continues without the marker.
 
 ## Endpoints
 <img width="588" height="509" alt="image" src="https://github.com/user-attachments/assets/2ee5e12f-6e84-4fb2-87c3-10367df07840" />
 
-- `/aircraft.json` — dump1090-style aircraft feed
-- `/data/aircraft.json` — readsb/dump1090-compatible alias
-- `/status` — detailed bridge/feed status
-- `/health` — bridge process health
-- `/` — Raw ADS-B map
+- `/` — Raw ADS-B Map
+- `/aircraft.json` — dump1090/readsb-compatible aircraft feed
+- `/data/aircraft.json` — compatibility alias for the aircraft feed
+- `/status` — machine-readable bridge and active-source status
 - `/status-page` — human-readable status page
+- `/health` — bridge process/service health
+- `/range-coverage` — observed maximum-range coverage and convergence metadata
+- `/range-coverage.geojson` — live coverage exported as GeoJSON
+- `POST /range-coverage/import` — validated merge/restore of exported coverage JSON
+- `/tracker-enrichment` — optional ADSB Aircraft Tracker map enrichment
+- `/map-config` — map configuration used by the Raw ADS-B Map
+- `/tile-debug` — map tile proxy diagnostics
+- `/tiles/{z}/{x}/{y}.png` — internal map-tile proxy route used by the map
 
 The service listens on container port `8085`. It is not exposed to the LAN by default. A host port can be assigned in the app's Network settings when an external client needs access.
 
@@ -111,7 +118,7 @@ Home Assistant `zone.home` coordinates are used only for Raw ADS-B Map presentat
 
 The aircraft feed is unauthenticated. Keep port 8085 internal unless LAN access is actually required.
 
-The App runs under a Home Assistant AppArmor profile. The v0.4.0 profile has been tested with all three supported input modes: SBS/BaseStation TCP, FR24 `flights.js`, and standard dump1090/readsb `aircraft.json`.
+The App runs under a Home Assistant AppArmor profile. The profile has been tested with all three supported input modes: SBS/BaseStation TCP, FR24 `flights.js`, and standard dump1090/readsb `aircraft.json`.
 
 | Capability | AppArmor access | Verified |
 |---|---|---|

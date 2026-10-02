@@ -48,6 +48,13 @@ Existing consumers such as **ADSB Aircraft Tracker for Home Assistant** can cont
 - `/status` — machine-readable bridge and active-source status
 - `/status-page` — human-readable status page
 - `/health` — bridge process/service health
+- `/range-coverage` — observed maximum-range coverage and convergence metadata
+- `/range-coverage.geojson` — live coverage exported as GeoJSON
+- `POST /range-coverage/import` — validated merge/restore of exported coverage JSON
+- `/tracker-enrichment` — optional ADSB Aircraft Tracker map enrichment
+- `/map-config` — map configuration used by the Raw ADS-B Map
+- `/tile-debug` — map tile proxy diagnostics
+- `/tiles/{z}/{x}/{y}.png` — internal map-tile proxy route used by the map
 
 Process health and aircraft-source health are intentionally separate. A temporary loss of the selected aircraft source does not by itself mean that the bridge process has failed.
 
