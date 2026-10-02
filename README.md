@@ -24,10 +24,10 @@ For the alternate `flights_js` source, configure the receiver host, HTTP port, u
 The app currently supports `amd64` Home Assistant systems.
 
 ## Home Assistant App
-<img width="1284" height="829" alt="image" src="https://github.com/user-attachments/assets/e0cf717d-a439-4912-a198-e9e4a511c5d6" />
+<img width="991" height="857" alt="image" src="https://github.com/user-attachments/assets/a7be378b-2772-4c62-9306-bcb95435872f" />
 
 ## Raw ADS-B Map
-<img width="3196" height="1865" alt="image" src="https://github.com/user-attachments/assets/dadfa365-77f8-4968-aa5d-635a5f3654bc" />
+<img width="1024" height="552" alt="image" src="https://github.com/user-attachments/assets/19d7cfd2-adfd-426d-a9b1-c0947be7b559" />
 
 ## Input sources
 
@@ -52,6 +52,7 @@ Source selection is explicit. v0.4.0 uses exactly one source and does not merge 
 v0.4.0 can read Home Assistant `zone.home` through the supported App/Core API proxy and display it on the Raw ADS-B Map. Home coordinates are not included in `/status`, aircraft JSON, logs, or tile diagnostics. If the entity is unavailable, the map continues without the marker.
 
 ## Endpoints
+<img width="588" height="509" alt="image" src="https://github.com/user-attachments/assets/2ee5e12f-6e84-4fb2-87c3-10367df07840" />
 
 - `/aircraft.json` — dump1090-style aircraft feed
 - `/data/aircraft.json` — readsb/dump1090-compatible alias
