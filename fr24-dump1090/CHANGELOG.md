@@ -2,6 +2,7 @@
 
 ## 0.5.1
 
+- Add GeoJSON export for observed range coverage, including a closed maximum-range LineString and per-bearing Point features with observation metadata.
 - Add range-coverage backup/restore on the status page, with validated merge import that retains the farther maximum in each bearing bin.
 
 - Add a persistent 360-degree maximum-observed-range coverage outline to the Raw ADS-B Map.

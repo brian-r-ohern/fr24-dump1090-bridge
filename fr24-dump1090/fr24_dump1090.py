@@ -706,6 +706,48 @@ def coverage_payload():
     return {"available": available, "bin_degrees": 1, "populated_bins": len(bins), "total_bins": 360, "last_import": coverage_last_import, "stats": stats, "bins": bins}
 
 
+def coverage_geojson_payload():
+    """Return the live coverage table as a QGIS-friendly GeoJSON FeatureCollection."""
+    coverage = coverage_payload()
+    bins = sorted(coverage.get("bins", []), key=lambda item: int(item.get("bearing", 0)))
+    features = []
+
+    coordinates = [[float(item["longitude"]), float(item["latitude"])] for item in bins]
+    if len(coordinates) >= 2:
+        line_coordinates = coordinates + [coordinates[0]]
+        stats = coverage.get("stats", {}) if isinstance(coverage.get("stats"), dict) else {}
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "name": "Maximum observed range",
+                "bin_degrees": coverage.get("bin_degrees", 1),
+                "populated_bins": coverage.get("populated_bins", len(bins)),
+                "total_bins": coverage.get("total_bins", 360),
+                "collection_started": stats.get("collection_started"),
+                "last_update": stats.get("last_update"),
+            },
+            "geometry": {"type": "LineString", "coordinates": line_coordinates},
+        })
+
+    for item in bins:
+        properties = {key: value for key, value in item.items() if key not in ("latitude", "longitude")}
+        properties["name"] = f"Bearing {int(item['bearing']):03d}°"
+        features.append({
+            "type": "Feature",
+            "properties": properties,
+            "geometry": {
+                "type": "Point",
+                "coordinates": [float(item["longitude"]), float(item["latitude"])],
+            },
+        })
+
+    return {
+        "type": "FeatureCollection",
+        "name": "FR24 dump1090 Bridge range coverage",
+        "features": features,
+    }
+
+
 def _entity_attributes(entity_id):
     state = _supervisor_core_request(f"/states/{entity_id}")
     attrs = state.get("attributes", {}) if isinstance(state, dict) else {}
@@ -1138,6 +1180,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/range-coverage":
             self.send_json(coverage_payload())
             return
+        if path == "/range-coverage.geojson":
+            self.send_json(coverage_geojson_payload())
+            return
         if path in ("/aircraft.json", "/data/aircraft.json"):
             with lock:
                 payload = latest_data
@@ -1188,12 +1233,13 @@ a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file
 <a href=\"status\">/status</a> &mdash; bridge and feed status<br>
 <a href=\"health\">/health</a> &mdash; health check<br>
 <a href=\"range-coverage\">/range-coverage</a> &mdash; observed range coverage<br>
+<a href=\"range-coverage.geojson\">/range-coverage.geojson</a> &mdash; observed range coverage as GeoJSON<br>
 <code>/range-coverage/import</code> &mdash; validated merge/restore of exported coverage<br>
 <a href=\"tracker-enrichment\">/tracker-enrichment</a> &mdash; ADSB Tracker enrichment<br>
 <a href=\"map-config\">/map-config</a> &mdash; map configuration
 </p>
 <h2>Range Coverage Backup / Restore</h2>
-<p><a href="range-coverage" download="range-coverage.json"><button type="button">Export coverage JSON</button></a></p>
+<p><a href="range-coverage" download="range-coverage.json"><button type="button">Export coverage JSON</button></a> <a href="range-coverage.geojson" download="range-coverage.geojson"><button type="button">Export coverage GeoJSON</button></a></p>
 <p><input id="coverage-file" type="file" accept="application/json,.json"> <button id="coverage-import" type="button">Import / merge coverage</button></p>
 <p id="coverage-result"><small>Import merges by bearing and keeps the farther range, so restoring an older backup will not overwrite a newer maximum.</small></p>
 <script>

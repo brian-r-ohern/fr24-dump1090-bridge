@@ -129,5 +129,5 @@ The `/range-coverage` diagnostic endpoint includes convergence metadata: collect
 
 ### Coverage backup and restore
 
-The status page provides **Export coverage JSON** and **Import / merge coverage** controls. Export saves the current `/range-coverage` payload before an uninstall/reinstall. Import posts that JSON to `/range-coverage/import`, validates the 1-degree bin data, and merges it with the current history by bearing. The farther `distance_nm` wins, so importing an older backup cannot replace a newer maximum. The merged result is flushed immediately to `/data/range-coverage.json`.
+The status page provides **Export coverage JSON** and **Import / merge coverage** controls. Export saves the current `/range-coverage` payload before an uninstall/reinstall. Import posts that JSON to `/range-coverage/import`, validates the 1-degree bin data, and merges it with the current history by bearing. The farther `distance_nm` wins, so importing an older backup cannot replace a newer maximum. The merged result is flushed immediately to `/data/range-coverage.json`. **Export coverage GeoJSON** downloads `/range-coverage.geojson`, generated on demand from the same live table. It contains a closed maximum-observed-range LineString and one Point feature per populated bearing bin, preserving the observation metadata without adding a separate angle field.
 
