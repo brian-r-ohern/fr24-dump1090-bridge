@@ -1154,7 +1154,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/status-page":
             s = snapshot_status()
-            common = f"""<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"5\">
+            common = f"""<!doctype html><html><head><meta charset=\"utf-8\">
 <title>FR24 to dump1090</title><style>
 body{{font-family:sans-serif;max-width:760px;margin:40px auto;padding:0 20px;background:#111;color:#eee}}
 table{{border-collapse:collapse;width:100%}}td{{padding:8px;border-bottom:1px solid #333}}td:first-child{{color:#aaa;width:45%}}
@@ -1201,7 +1201,7 @@ document.getElementById('coverage-import').addEventListener('click',async()=>{{c
 </script>
 <h2>Diagnostics</h2><p><a href="tile-debug">/tile-debug</a> &mdash; map tile proxy diagnostics</p>
 <p><small>Map tiles are served internally through <code>/tiles/{z}/{x}/{y}.png</code>.</small></p>
-<p><small>This page refreshes every 5 seconds.</small></p></body></html>"""
+</body></html>"""
             self.send_html(html)
             return
         self.send_json({"error": "not found", "path": path}, 404)
