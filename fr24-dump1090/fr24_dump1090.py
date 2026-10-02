@@ -1200,7 +1200,7 @@ a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file
 document.getElementById('coverage-import').addEventListener('click',async()=>{{const f=document.getElementById('coverage-file').files[0],out=document.getElementById('coverage-result');if(!f){{out.textContent='Select a coverage JSON file first.';return}}try{{const text=await f.text();JSON.parse(text);out.textContent='Importing...';const r=await fetch('range-coverage/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:text}});const x=await r.json();if(!r.ok||!x.ok)throw new Error(x.error||`HTTP ${{r.status}}`);out.textContent=`Import complete: ${{x.added}} added, ${{x.replaced}} replaced, ${{x.retained}} retained; ${{x.populated_bins}}/360 bins populated.`}}catch(e){{out.textContent='Import failed: '+e.message}}}});
 </script>
 <h2>Diagnostics</h2><p><a href="tile-debug">/tile-debug</a> &mdash; map tile proxy diagnostics</p>
-<p><small>Map tiles are served internally through <code>/tiles/{z}/{x}/{y}.png</code>.</small></p>
+<p><small>Map tiles are served internally through <code>/tiles/{{z}}/{{x}}/{{y}}.png</code>.</small></p>
 </body></html>"""
             self.send_html(html)
             return
