@@ -2,6 +2,8 @@
 
 ## 0.5.1
 
+- Add range-coverage backup/restore on the status page, with validated merge import that retains the farther maximum in each bearing bin.
+
 - Add a persistent 360-degree maximum-observed-range coverage outline to the Raw ADS-B Map.
 - Record the farthest positioned aircraft observed in each 1-degree bearing bin from `zone.home`.
 - Persist coverage records under `/data` so the learned envelope survives app and HAOS restarts.

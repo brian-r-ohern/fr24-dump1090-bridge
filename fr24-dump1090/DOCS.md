@@ -126,3 +126,8 @@ The Raw ADS-B Map learns a persistent receiver-coverage outline from the selecte
 The Raw ADS-B Map maintains 360 persistent 1-degree bearing bins under `/data/range-coverage.json`. Distance is the sole record-selection metric: a bin is replaced only when a farther positioned aircraft is observed. Altitude, aircraft identity, callsign, position, and timestamps are metadata for the winning distance observation. Empty bins are not populated by interpolation; the map only connects populated vertices for display.
 
 The `/range-coverage` diagnostic endpoint includes convergence metadata: collection start, total updates, first fills, record replacements, last update, hourly update counts, and each bin's first-observed time and update count. Existing v0.5.1 coverage files are migrated without resetting learned ranges.
+
+### Coverage backup and restore
+
+The status page provides **Export coverage JSON** and **Import / merge coverage** controls. Export saves the current `/range-coverage` payload before an uninstall/reinstall. Import posts that JSON to `/range-coverage/import`, validates the 1-degree bin data, and merges it with the current history by bearing. The farther `distance_nm` wins, so importing an older backup cannot replace a newer maximum. The merged result is flushed immediately to `/data/range-coverage.json`.
+

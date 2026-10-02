@@ -122,6 +122,7 @@ coverage_dirty = False
 coverage_generation = 0
 coverage_last_flush = 0.0
 coverage_loaded = False
+coverage_last_import = None
 coverage_stats = {
     "collection_started": None,
     "total_updates": 0,
@@ -610,6 +611,81 @@ def update_coverage_from_snapshot():
         flush_coverage()
 
 
+
+def import_coverage_payload(payload):
+    """Validate and merge an exported /range-coverage payload into history."""
+    global coverage_dirty, coverage_generation, coverage_stats, coverage_last_import
+    if not isinstance(payload, dict):
+        raise ValueError("coverage import must be a JSON object")
+    if payload.get("bin_degrees", 1) != 1:
+        raise ValueError("coverage import must use 1-degree bins")
+    bins = payload.get("bins")
+    if not isinstance(bins, list):
+        raise ValueError("coverage import must contain a bins array")
+    if len(bins) > 360:
+        raise ValueError("coverage import contains more than 360 bins")
+
+    validated = []
+    seen = set()
+    for item in bins:
+        if not isinstance(item, dict):
+            raise ValueError("every coverage bin must be an object")
+        bearing = item.get("bearing")
+        distance = item.get("distance_nm")
+        if isinstance(bearing, bool) or not isinstance(bearing, int) or not 0 <= bearing < 360:
+            raise ValueError("coverage bearing must be an integer from 0 through 359")
+        if bearing in seen:
+            raise ValueError(f"duplicate coverage bearing {bearing}")
+        seen.add(bearing)
+        if isinstance(distance, bool) or not isinstance(distance, (int, float)) or not math.isfinite(float(distance)) or distance < 0:
+            raise ValueError(f"invalid distance_nm for bearing {bearing}")
+        lat, lon = item.get("latitude"), item.get("longitude")
+        if isinstance(lat, bool) or isinstance(lon, bool) or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            raise ValueError(f"missing/invalid coordinates for bearing {bearing}")
+        if not math.isfinite(float(lat)) or not math.isfinite(float(lon)) or not -90 <= float(lat) <= 90 or not -180 <= float(lon) <= 180:
+            raise ValueError(f"out-of-range coordinates for bearing {bearing}")
+        clean = dict(item)
+        clean["bearing"] = bearing
+        clean["distance_nm"] = round(float(distance), 2)
+        clean["latitude"] = round(float(lat), 6)
+        clean["longitude"] = round(float(lon), 6)
+        clean.setdefault("first_observed", clean.get("observed"))
+        clean.setdefault("update_count", 1)
+        validated.append(clean)
+
+    imported_stats = payload.get("stats", {})
+    if not isinstance(imported_stats, dict):
+        imported_stats = {}
+    result = {"received": len(validated), "added": 0, "replaced": 0, "retained": 0}
+    with lock:
+        for item in validated:
+            bearing = item["bearing"]
+            current = coverage_bins[bearing]
+            if current is None:
+                coverage_bins[bearing] = item
+                result["added"] += 1
+            elif float(item["distance_nm"]) > float(current.get("distance_nm", -1)):
+                coverage_bins[bearing] = item
+                result["replaced"] += 1
+            else:
+                result["retained"] += 1
+
+        # Preserve the oldest known collection start. Import counters are not
+        # added to observation counters because an import is not a reception.
+        starts = [x for x in (coverage_stats.get("collection_started"), imported_stats.get("collection_started")) if x]
+        if starts:
+            coverage_stats["collection_started"] = min(starts)
+        if not coverage_stats.get("last_update") and imported_stats.get("last_update"):
+            coverage_stats["last_update"] = imported_stats.get("last_update")
+        coverage_last_import = iso_utc(time.time())
+        coverage_dirty = True
+        coverage_generation += 1
+
+    flush_coverage(force=True)
+    result["populated_bins"] = sum(x is not None for x in coverage_bins)
+    result["last_import"] = coverage_last_import
+    return result
+
 def coverage_updater():
     load_coverage()
     while True:
@@ -627,7 +703,7 @@ def coverage_payload():
         stats = dict(coverage_stats)
         stats["hourly_updates"] = dict(coverage_stats.get("hourly_updates", {}))
         available = bool(home_marker)
-    return {"available": available, "bin_degrees": 1, "populated_bins": len(bins), "total_bins": 360, "stats": stats, "bins": bins}
+    return {"available": available, "bin_degrees": 1, "populated_bins": len(bins), "total_bins": 360, "last_import": coverage_last_import, "stats": stats, "bins": bins}
 
 
 def _entity_attributes(entity_id):
@@ -997,6 +1073,29 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self):
+        path, _, _query_string = self.path.partition("?")
+        if path != "/range-coverage/import":
+            self.send_json({"error": "not found", "path": path}, 404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 2 * 1024 * 1024:
+            self.send_json({"error": "coverage import must be a JSON body no larger than 2 MiB"}, 400)
+            return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            result = import_coverage_payload(payload)
+            print(f"[INFO] Coverage import complete: {result['added']} added, {result['replaced']} replaced, {result['retained']} retained", flush=True)
+            self.send_json({"ok": True, **result})
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            self.send_json({"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            print(f"[WARN] Coverage import failed: {exc}", flush=True)
+            self.send_json({"ok": False, "error": "coverage import failed"}, 500)
+
     def do_GET(self):
         global requests_served, tile_proxy_requests, tile_proxy_cache_hits
         with lock:
@@ -1059,7 +1158,7 @@ class Handler(BaseHTTPRequestHandler):
 <title>FR24 to dump1090</title><style>
 body{{font-family:sans-serif;max-width:760px;margin:40px auto;padding:0 20px;background:#111;color:#eee}}
 table{{border-collapse:collapse;width:100%}}td{{padding:8px;border-bottom:1px solid #333}}td:first-child{{color:#aaa;width:45%}}
-a{{color:#7db7ff}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color:#ffd166}}.unhealthy{{color:#ff6b6b}}
+a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file]{{max-width:100%}}#coverage-result{{color:#aaa}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color:#ffd166}}.unhealthy{{color:#ff6b6b}}
 </style></head><body><h1>FR24 &rarr; dump1090</h1>
 <p>Feed status: <strong class=\"{s['feed_status']}\">{s['feed_status'].upper()}</strong></p><table>
 <tr><td>Input source</td><td>{s['source']}</td></tr><tr><td>Service health</td><td><span class=\"ok\">OK</span></td></tr>
@@ -1089,10 +1188,18 @@ a{{color:#7db7ff}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color
 <a href=\"status\">/status</a> &mdash; bridge and feed status<br>
 <a href=\"health\">/health</a> &mdash; health check<br>
 <a href=\"range-coverage\">/range-coverage</a> &mdash; observed range coverage<br>
+<code>/range-coverage/import</code> &mdash; validated merge/restore of exported coverage<br>
 <a href=\"tracker-enrichment\">/tracker-enrichment</a> &mdash; ADSB Tracker enrichment<br>
 <a href=\"map-config\">/map-config</a> &mdash; map configuration
 </p>
-<h2>Diagnostics</h2><p><a href=\"tile-debug\">/tile-debug</a> &mdash; map tile proxy diagnostics</p>
+<h2>Range Coverage Backup / Restore</h2>
+<p><a href="range-coverage" download="range-coverage.json"><button type="button">Export coverage JSON</button></a></p>
+<p><input id="coverage-file" type="file" accept="application/json,.json"> <button id="coverage-import" type="button">Import / merge coverage</button></p>
+<p id="coverage-result"><small>Import merges by bearing and keeps the farther range, so restoring an older backup will not overwrite a newer maximum.</small></p>
+<script>
+document.getElementById('coverage-import').addEventListener('click',async()=>{{const f=document.getElementById('coverage-file').files[0],out=document.getElementById('coverage-result');if(!f){{out.textContent='Select a coverage JSON file first.';return}}try{{const text=await f.text();JSON.parse(text);out.textContent='Importing...';const r=await fetch('range-coverage/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:text}});const x=await r.json();if(!r.ok||!x.ok)throw new Error(x.error||`HTTP ${{r.status}}`);out.textContent=`Import complete: ${{x.added}} added, ${{x.replaced}} replaced, ${{x.retained}} retained; ${{x.populated_bins}}/360 bins populated.`}}catch(e){{out.textContent='Import failed: '+e.message}}}});
+</script>
+<h2>Diagnostics</h2><p><a href="tile-debug">/tile-debug</a> &mdash; map tile proxy diagnostics</p>
 <p><small>Map tiles are served internally through <code>/tiles/{z}/{x}/{y}.png</code>.</small></p>
 <p><small>This page refreshes every 5 seconds.</small></p></body></html>"""
             self.send_html(html)
