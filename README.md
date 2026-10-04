@@ -27,7 +27,7 @@ The app currently supports `amd64` Home Assistant systems.
 <img width="991" height="857" alt="image" src="https://github.com/user-attachments/assets/a7be378b-2772-4c62-9306-bcb95435872f" />
 
 ## Raw ADS-B Map
-<img width="1024" height="552" alt="image" src="https://github.com/user-attachments/assets/19d7cfd2-adfd-426d-a9b1-c0947be7b559" />
+<img width="1024" height="566" alt="image" src="https://github.com/user-attachments/assets/1c72dde2-0537-4216-a299-8ca89eab86ed" />
 
 ## Input sources
 
