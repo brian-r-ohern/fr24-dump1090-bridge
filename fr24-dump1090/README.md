@@ -24,6 +24,10 @@ Source selection is explicit: exactly one aircraft source is active at a time. T
 
    Polls an existing dump1090/readsb-compatible `aircraft.json` URL, allowing the bridge and Raw ADS-B Map to operate with another standard aircraft-data source instead of an FR24 receiver.
 
+4. **FAA SWIM TFMS — Alternate (v0.5.3)**
+
+   Connects to the user's authorized FAA SWIM Solace queue, consumes TFMS messages, selects `trackInformation`, and retains positioned tracks inside a configurable radius around Home Assistant Home. The FAA-provided broker host, VPN, subscription username/password, and queue/JMS name are required. Credentials and queue identifiers are not returned by bridge diagnostics or logs. v0.5.3 treats TFMS as a mutually exclusive aircraft source; it does not merge TFMS with ADS-B sources.
+
 ## 🗺️ Raw ADS-B Map & Home Assistant Integration
 
 The bridge provides a self-contained **Raw ADS-B Map** through Home Assistant Ingress.
@@ -73,3 +77,11 @@ Before uninstalling/reinstalling the app, use the status page to export the accu
 ### Optional map enrichment
 
 Map enrichment can be selected with `enrichment_source`. The default `adsb_tracker` preserves existing behavior; set it to `none` to disable ADSB Aircraft Tracker enrichment without changing the selected aircraft data source.
+
+### TFMS airport matching and map display
+
+When using TFMS, enter the full four-letter airport identifier in `destination_airport`, matching the feed (for example, `KSYR` rather than `SYR`). For most airports in the contiguous United States, this means adding `K` to the three-letter code. Alaska and Hawaii use different prefixes; use the actual identifier rather than automatically adding `K`. Origin (O) and destination (D) badges compare this setting directly with TFMS departure and arrival airport codes, ignoring case.
+
+The observed coverage outline is hidden for TFMS because its boundary reflects the configured geographic filter rather than radio reception. Numeric track/course remains visible with a 16-point compass label, such as `274.4° (W)`; calculated course retains its `(course)` label.
+
+TFMS track history accepts a flight callsign (for example, `UCA4250`) and queries `http://192.168.0.1:8756/flight?callsign=uca4250`. ADS-B sources continue to accept a six-digit ICAO hex and use the configured history service.

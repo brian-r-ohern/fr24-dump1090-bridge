@@ -45,6 +45,11 @@ profile ADDON_SLUG flags=(attach_disconnected,mediate_deleted) {
   /usr/bin/python3 ix,
   /usr/bin/python3.* ix,
   /opt/fr24_dump1090.py r,
+  /opt/swim_tfms.py r,
+  /usr/lib/python3*/** r,
+  /usr/lib/python3*/site-packages/** mr,
+  /usr/local/lib/python3*/site-packages/** mr,
+  /etc/ssl/certs/** r,
 
   # Home Assistant App configuration and persistent data.
   #

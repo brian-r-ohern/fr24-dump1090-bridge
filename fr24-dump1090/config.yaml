@@ -1,5 +1,5 @@
 name: "FR24 dump1090 Bridge"
-version: "0.5.2"
+version: "0.5.3"
 slug: "fr24_dump1090"
 description: >-
   Normalizes a selected local aircraft data source into
@@ -28,9 +28,14 @@ options:
   request_timeout: 3
   aircraft_json_poll_interval: 1
   enrichment_source: "adsb_tracker"
+  swim_product: "tfms"
+  swim_radius_nm: 250
+  swim_aircraft_timeout: 120
+  swim_retry_count: 3
+  swim_retry_interval_ms: 3000
 
 schema:
-  source: "list(sbs_30003|flights_js|aircraft_json)"
+  source: "list(sbs_30003|flights_js|aircraft_json|swim_tfms)"
   receiver_host: str?
   sbs_port: port?
   receiver_port: port?
@@ -41,5 +46,15 @@ schema:
   aircraft_json_url: str?
   aircraft_json_poll_interval: "int(1,60)?"
   enrichment_source: "list(adsb_tracker|none)"
+  swim_product: "list(tfms)?"
+  swim_host: str?
+  swim_vpn: str?
+  swim_username: str?
+  swim_password: password?
+  swim_queue: str?
+  swim_radius_nm: "int(25,1000)?"
+  swim_aircraft_timeout: "int(30,900)?"
+  swim_retry_count: "int(0,20)?"
+  swim_retry_interval_ms: "int(500,60000)?"
   history_url: str?
   destination_airport: str?

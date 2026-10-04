@@ -166,3 +166,16 @@ or affiliated with FR24 dump1090 Bridge.
 ### Optional map enrichment
 
 Map enrichment can be selected with `enrichment_source`. The default `adsb_tracker` preserves existing behavior; set it to `none` to disable ADSB Aircraft Tracker enrichment without changing the selected aircraft data source.
+
+
+## FAA SWIM TFMS (v0.5.3)
+
+Version 0.5.3 adds FAA SWIM TFMS as a fourth explicitly selected aircraft source for authorized SWIM users. The App uses user-supplied SWIM connection/subscription information, filters TFMS `trackInformation` geographically around Home Assistant Home, and republishes accepted tracks through the existing normalized aircraft endpoints and map. SWIM credentials, queue identifiers, and Home coordinates are not exposed through bridge diagnostics.
+
+### TFMS airport matching and map display
+
+When using TFMS, enter the full four-letter airport identifier in `destination_airport`, matching the feed (for example, `KSYR` rather than `SYR`). For most airports in the contiguous United States, this means adding `K` to the three-letter code. Alaska and Hawaii use different prefixes; use the actual identifier rather than automatically adding `K`. Origin (O) and destination (D) badges compare this setting directly with TFMS departure and arrival airport codes, ignoring case.
+
+The observed coverage outline is hidden for TFMS because its boundary reflects the configured geographic filter rather than radio reception. Numeric track/course remains visible with a 16-point compass label, such as `274.4° (W)`; calculated course retains its `(course)` label.
+
+TFMS track history accepts a flight callsign (for example, `UCA4250`) and queries `http://192.168.0.1:8756/flight?callsign=uca4250`. ADS-B sources continue to accept a six-digit ICAO hex and use the configured history service.

@@ -1,7 +1,7 @@
 configuration:
   source:
     name: Input source
-    description: "Choose exactly one aircraft source: SBS/BaseStation TCP (recommended for FR24 receivers), FR24 flights.js, or a standard dump1090/readsb aircraft.json URL."
+    description: "Choose exactly one aircraft source: SBS/BaseStation TCP (recommended for FR24 receivers), FR24 flights.js, a standard dump1090/readsb aircraft.json URL, or FAA SWIM TFMS."
   aircraft_json_url:
     name: aircraft.json URL
     description: Full HTTP or HTTPS URL to a standard dump1090/readsb aircraft.json feed; required only for aircraft_json mode.
@@ -32,5 +32,29 @@ configuration:
   destination_airport:
     name: Origin/destination airport highlight
     description: Optional IATA airport code (for example, SYR) to mark aircraft whose ADSB Aircraft Tracker route originates at or is destined for that airport.
+  swim_product:
+    name: FAA SWIM product
+    description: SWIM product adapter. v0.5.3 supports TFMS.
+  swim_host:
+    name: SWIM broker host
+    description: Secure Solace broker host supplied with the FAA SWIM subscription.
+  swim_vpn:
+    name: SWIM VPN
+    description: Solace message VPN supplied with the FAA SWIM subscription.
+  swim_username:
+    name: SWIM subscription username
+    description: Username supplied for the FAA SWIM subscription.
+  swim_password:
+    name: SWIM subscription password
+    description: Password supplied for the FAA SWIM subscription.
+  swim_queue:
+    name: SWIM queue / JMS name
+    description: Durable queue or JMS name supplied for the selected FAA SWIM feed.
+  swim_radius_nm:
+    name: SWIM geographic radius
+    description: Retain TFMS trackInformation positions within this many nautical miles of Home Assistant Home.
+  swim_aircraft_timeout:
+    name: SWIM aircraft timeout
+    description: Seconds without an accepted TFMS position before removing an aircraft from the current snapshot.
 network:
   8085/tcp: FR24 dump1090/readsb-compatible HTTP service

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.3
+
+- Add FAA SWIM TFMS as a fourth explicitly selectable aircraft source, using independent Solace PubSub+ transport with TLS validation and durable-queue acknowledgements.
+- Parse TFMS message attributes and current-position DMS coordinates, including full direction names; exclude upcoming route points from current positions.
+- Apply a configurable geographic gate around Home Assistant Home and publish accepted tracks through existing aircraft/map endpoints.
+- Calculate course over ground from successive newer timestamped positions, with movement, elapsed-time and implied-speed checks; ignore duplicate/out-of-order fixes.
+- Show airline, departure/arrival airports, aircraft/user categories, timestamps and raw assigned-altitude metadata in map popups.
+- Match TFMS origin/destination badges directly from airport metadata; document four-letter airport identifiers.
+- Query TFMS history by callsign at http://192.168.0.1:8756/flight; retain configured ICAO-hex history queries for ADS-B sources.
+- Append a 16-point compass label to numeric track/course while preserving the calculated-course label.
+- Hide the observed coverage outline for TFMS; retain the ADS-B coverage display.
+- Add bounded parser counters, message types and XML element/attribute-name diagnostics without raw XML values.
+- Preserve existing ADS-B input sources and establish a SWIM adapter boundary without incorporating FAA JumpStart source code.
+
 ## 0.5.2
 
 - Hardened Leaflet sizing/redraw behavior for Home Assistant Ingress navigation and `fitBounds()` transitions.
