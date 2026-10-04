@@ -29,6 +29,14 @@ The app currently supports `amd64` Home Assistant systems.
 ## Raw ADS-B Map
 <img width="1024" height="566" alt="image" src="https://github.com/user-attachments/assets/1c72dde2-0537-4216-a299-8ca89eab86ed" />
 
+## Maximum observed range
+
+The Raw ADS-B Map maintains a persistent empirical coverage envelope from positioned aircraft received through the selected aircraft source. For each 1° bearing sector, the bridge retains the farthest observed aircraft and displays that maximum across the sector.
+
+The envelope grows as farther observations are received and is intentionally not smoothed, preserving the actual observed maxima and directional variations in reception. The maximum observed distance is also shown in the map status display.
+
+Coverage is stored in the App's persistent /data storage. It is preserved across App upgrades, but not if the App is uninstalled and reinstalled or rebuilt. Coverage can be exported as JSON or GeoJSON; JSON exports can be restored using the import/merge function, which retains the farther observation for each bearing sector. Export the coverage JSON before uninstalling, reinstalling, or rebuilding the App, then import it afterward to restore the accumulated coverage.
+
 ## Input sources
 
 ### SBS/BaseStation — recommended/default
