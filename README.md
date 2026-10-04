@@ -55,7 +55,7 @@ The bridge can poll a standard dump1090/readsb `aircraft.json` URL, normalize th
 
 Source selection is explicit. The bridge uses exactly one source and does not merge or automatically fail over between sources.
 
-## FAA SWIM TFMS
+### FAA SWIM TFMS
 The **Traffic Flow Management System (TFMS)** is an FAA platform used to monitor, manage, and balance air traffic flow across the United States National Airspace System (NAS).
 
 The ADSB-d1090_Bridge supports the **TFMData XML flight-data feed**, which combines correlated flight information from NAS sources and international participants. The feed includes scheduling, routing, and aircraft position information. The bridge processes `trackInformation` messages to display aircraft positions and available flight metadata.
