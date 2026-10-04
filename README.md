@@ -60,8 +60,8 @@ The **Traffic Flow Management System (TFMS)** is an FAA platform used to monitor
 
 The ADSB-d1090_Bridge supports the **TFMData XML flight-data feed**, which combines correlated flight information from NAS sources and international participants. The feed includes scheduling, routing, and aircraft position information. The bridge processes `trackInformation` messages to display aircraft positions and available flight metadata.
 
-Users with an authorized FAA SWIM subscription will need the connection details provided on their subscription’s feed status page: the broker host and port, message VPN, username, password, and queue name. Enter these values in the bridge’s SWIM configuration.
-<img width="1024" height="623" alt="image" src="https://github.com/user-attachments/assets/f9c56d1f-57b9-40a6-8214-b08a5ff641f5" />
+Users with an authorized FAA SWIM subscription will need the connection details provided on their subscription’s feed status page: the broker host and port (Copy the complete JMS Connection URL, including tcps:// and the port, into SWIM broker host), message VPN, username, password, and queue name. Enter these values in the bridge’s SWIM configuration. Connection Factory is not required
+<img width="1024" height="623" alt="image" src="https://github.com/user-attachments/assets/00682b22-c111-4b69-8e92-45b6d0fdcff3" />
 
 ## Home marker
 
