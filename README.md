@@ -153,3 +153,8 @@ The following application has been used with the bridge:
 
 This is an independent project. It is not included with, maintained by,
 or affiliated with FR24 dump1090 Bridge.
+
+
+### Optional map enrichment
+
+Map enrichment can be selected with `enrichment_source`. The default `adsb_tracker` preserves existing behavior; set it to `none` to disable ADSB Aircraft Tracker enrichment without changing the selected aircraft data source.

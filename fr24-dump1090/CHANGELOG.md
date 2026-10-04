@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.2
+
+- Hardened Leaflet sizing/redraw behavior for Home Assistant Ingress navigation and `fitBounds()` transitions.
+- Render maximum-observed-range coverage as 1-degree stepped sectors instead of center-point interpolation.
+- Added persistent maximum observed range to the map status panel.
+- Added selectable map enrichment (`adsb_tracker` or `none`), retaining Tracker as the upgrade-compatible default.
+- Refreshed the Home marker icon.
+- Added an optional, configuration-only historical ICAO track overlay for installations with a compatible `/flight?hex=` service.
+
+
 ## 0.5.1
 
 - Add GeoJSON export for observed range coverage, including a closed maximum-range LineString and per-bearing Point features with observation metadata.

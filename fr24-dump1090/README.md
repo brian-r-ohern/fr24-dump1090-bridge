@@ -68,3 +68,8 @@ The Raw ADS-B Map learns a persistent receiver-coverage outline from the selecte
 ### Range coverage backup / restore
 
 Before uninstalling/reinstalling the app, use the status page to export the accumulated range-coverage JSON. After reinstall, import the saved JSON; the bridge validates it and merges each bearing bin by keeping the farther observed range. The restore endpoint is `POST /range-coverage/import`. The same status page can export the live coverage as GeoJSON from `/range-coverage.geojson` for GIS tools such as QGIS; the GeoJSON contains a closed maximum-range LineString plus one Point feature per populated bearing bin.
+
+
+### Optional map enrichment
+
+Map enrichment can be selected with `enrichment_source`. The default `adsb_tracker` preserves existing behavior; set it to `none` to disable ADSB Aircraft Tracker enrichment without changing the selected aircraft data source.

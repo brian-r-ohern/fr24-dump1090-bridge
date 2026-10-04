@@ -1,5 +1,5 @@
 name: "FR24 dump1090 Bridge"
-version: "0.5.1"
+version: "0.5.2"
 slug: "fr24_dump1090"
 description: >-
   Normalizes a selected local aircraft data source into
@@ -27,6 +27,7 @@ options:
   poll_interval: 2
   request_timeout: 3
   aircraft_json_poll_interval: 1
+  enrichment_source: "adsb_tracker"
 
 schema:
   source: "list(sbs_30003|flights_js|aircraft_json)"
@@ -39,4 +40,6 @@ schema:
   request_timeout: "int(1,30)?"
   aircraft_json_url: str?
   aircraft_json_poll_interval: "int(1,60)?"
+  enrichment_source: "list(adsb_tracker|none)"
+  history_url: str?
   destination_airport: str?
