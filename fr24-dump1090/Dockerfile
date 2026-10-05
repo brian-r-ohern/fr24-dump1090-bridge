@@ -11,7 +11,7 @@ RUN chmod a+x /run.sh
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD curl --fail --silent http://127.0.0.1:8085/health >/dev/null || exit 1
 
-ARG BUILD_VERSION=0.5.3
+ARG BUILD_VERSION=0.5.4
 ARG BUILD_ARCH=amd64
 LABEL \
   io.hass.version="${BUILD_VERSION}" \

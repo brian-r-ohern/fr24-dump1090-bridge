@@ -133,16 +133,21 @@ development installations.
 
 ## Maximum observed range coverage
 
-The Raw ADS-B Map maintains 360 persistent 1-degree bearing bins under `/data/range-coverage.json`. Distance is the sole record-selection metric: a bin is replaced only when a farther positioned aircraft is observed. Altitude, aircraft identity, callsign, position, and timestamps are metadata for the winning distance observation. Empty bins are not populated by interpolation; the map only connects populated vertices for display.
+The Raw ADS-B Map maintains 720 persistent 0.5-degree bearing bins under `/data/range-coverage.json`. Distance is the sole record-selection metric: a bin is replaced only when a farther positioned aircraft is observed. Altitude, aircraft identity, callsign, position, and timestamps are metadata for the winning distance observation. Empty bins remain gaps in the rendered stepped envelope; they are never bridged or populated by interpolation.
 
 The `/range-coverage` diagnostic endpoint includes convergence metadata: collection start, total updates, first fills, record replacements, last update, hourly update counts, and each bin's first-observed time and update count. Existing v0.5.1 coverage files are migrated without resetting learned ranges.
 
 ### Coverage backup and restore
 
-The status page provides **Export coverage JSON** and **Import / merge coverage** controls. Export saves the current `/range-coverage` payload before an uninstall/reinstall. Import posts that JSON to `/range-coverage/import`, validates the 1-degree bin data, and merges it with the current history by bearing. The farther `distance_nm` wins, so importing an older backup cannot replace a newer maximum. The merged result is flushed immediately to `/data/range-coverage.json`. **Export coverage GeoJSON** downloads `/range-coverage.geojson`, generated on demand from the same live table. It contains a closed maximum-observed-range LineString and one Point feature per populated bearing bin, preserving the observation metadata without adding a separate angle field.
+The status page provides **Export coverage JSON** and **Import / merge coverage** controls. Export saves the current `/range-coverage` payload before an uninstall/reinstall. Import posts that JSON to `/range-coverage/import`, validates either 1-degree legacy or 0.5-degree native bin data, and merges it with the current history by bearing. The farther `distance_nm` wins, so importing an older backup cannot replace a newer maximum. The merged result is flushed immediately to `/data/range-coverage.json`. **Export coverage GeoJSON** downloads `/range-coverage.geojson`, generated on demand from the same live table. It contains ordered empirical Point features and the exact stepped map envelope: open MultiLineString runs for incomplete data, or a Polygon only when all 720 bins are populated.
 
 
 
 ### Optional map enrichment
 
 Map enrichment can be selected with `enrichment_source`. The default `adsb_tracker` preserves existing behavior; set it to `none` to disable ADSB Aircraft Tracker enrichment without changing the selected aircraft data source.
+
+
+### Coverage migration in v0.5.4
+
+The original 1° file is archived as `/data/range-coverage.json.1-degree-baseline.json` before migration and retained as `baseline_1_degree` in exported JSON. Use **Export 1° baseline** on the status page to download it. Legacy maxima seed two adjacent bins (12° → 12° and 12.5°), including on restart from a preserved baseline. Each copy is labeled `legacy_adjacent_seed`; it is not a separate observation. Seeding does not require Home. Imports retain the farther maximum and include source-resolution provenance. Previously discarded observations cannot be reconstructed. GeoJSON and the map use the same derived sector boundary; raw source positions retain provenance; duplicated legacy seed points are identified as `legacy_sector_seed` in GeoJSON.

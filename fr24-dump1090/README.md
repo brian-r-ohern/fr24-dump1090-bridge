@@ -66,12 +66,12 @@ See the app Documentation tab for detailed configuration, source behavior, Home 
 
 ## Maximum observed range coverage
 
-The Raw ADS-B Map learns a persistent receiver-coverage outline from the selected bridge aircraft source. Positioned aircraft are measured from Home Assistant `zone.home` and assigned to 360 one-degree bearing bins. Each bin retains only its farthest observed aircraft. The map connects successive populated bins, including across currently empty bearings, without storing synthetic observations. Coverage is saved under `/data` and continues learning across app and HAOS restarts.
+The Raw ADS-B Map learns a persistent receiver-coverage outline from the selected bridge aircraft source. Positioned aircraft are measured from Home Assistant `zone.home` and assigned to 720 half-degree bearing bins. Each bin retains only its farthest observed aircraft. The map draws successive populated bin footprints and breaks the outline at every empty bin. Coverage is saved under `/data` and continues learning across app and HAOS restarts.
 
 
 ### Range coverage backup / restore
 
-Before uninstalling/reinstalling the app, use the status page to export the accumulated range-coverage JSON. After reinstall, import the saved JSON; the bridge validates it and merges each bearing bin by keeping the farther observed range. The restore endpoint is `POST /range-coverage/import`. The same status page can export the live coverage as GeoJSON from `/range-coverage.geojson` for GIS tools such as QGIS; the GeoJSON contains a closed maximum-range LineString plus one Point feature per populated bearing bin.
+Before uninstalling/reinstalling the app, use the status page to export the accumulated range-coverage JSON. After reinstall, import the saved JSON; the bridge validates it and merges each bearing bin by keeping the farther observed range. The restore endpoint is `POST /range-coverage/import`. The same status page can export the live coverage as GeoJSON from `/range-coverage.geojson` for GIS tools such as QGIS; the GeoJSON contains ordered empirical points plus the rendered envelope, with gaps retained and a polygon only for complete coverage.
 
 
 ### Optional map enrichment
@@ -84,4 +84,9 @@ When using TFMS, enter the full four-letter airport identifier in `destination_a
 
 The observed coverage outline is hidden for TFMS because its boundary reflects the configured geographic filter rather than radio reception. Numeric track/course remains visible with a 16-point compass label, such as `274.4° (W)`; calculated course retains its `(course)` label.
 
-TFMS track history accepts a flight callsign (for example, `UCA4250`) and queries `http://192.168.0.1:8756/flight?callsign=uca4250`. ADS-B sources continue to accept a six-digit ICAO hex and use the configured history service.
+Track history is a developer-only tool shown only when `history_url` is configured. Contact the author for an API description. The configured base URL receives `/flight?callsign=...` for TFMS or `/flight?hex=...` for ADS-B.
+
+
+### Coverage migration in v0.5.4
+
+The original 1° file is archived as `/data/range-coverage.json.1-degree-baseline.json` before migration and retained as `baseline_1_degree` in exported JSON. Use **Export 1° baseline** on the status page to download it. Legacy maxima seed two adjacent bins (12° → 12° and 12.5°), including on restart from a preserved baseline. Each copy is labeled `legacy_adjacent_seed`; it is not a separate observation. Seeding does not require Home. Imports retain the farther maximum and include source-resolution provenance. Previously discarded observations cannot be reconstructed. GeoJSON and the map use the same derived sector boundary; raw source positions retain provenance; duplicated legacy seed points are identified as `legacy_sector_seed` in GeoJSON.

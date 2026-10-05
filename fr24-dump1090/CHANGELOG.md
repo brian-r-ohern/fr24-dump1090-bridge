@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.4
+
+- Report build version in `/status`, the human-readable feed status page, and the map bridge status panel.
+- Show track history only when a history URL is configured for any input; remove the hardcoded TFMS endpoint.
+- Increase active coverage resolution to 0.5° / 720 bins; archive the original 1° file and retain a downloadable baseline.
+- Seed each legacy 1° maximum into two adjacent 0.5° bins (12° → 12° and 12.5°); label coarse seed provenance and preserve farther maxima. Reapply the preserved baseline on restart for existing 0.5° installations.
+- Export ordered empirical GeoJSON points plus the exact rendered envelope; break at empty bins and emit a polygon only for complete coverage.
+- Document the developer-only history tool and range-envelope evolution.
+
 ## 0.5.3
 
 - Add FAA SWIM TFMS as a fourth explicitly selectable aircraft source, using independent Solace PubSub+ transport with TLS validation and durable-queue acknowledgements.

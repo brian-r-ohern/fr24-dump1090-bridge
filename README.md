@@ -31,7 +31,7 @@ The app currently supports `amd64` Home Assistant systems.
 
 ## Maximum observed range
 
-The Raw ADS-B Map maintains a persistent empirical coverage envelope from positioned aircraft received through the selected aircraft source. For each 1° bearing sector, the bridge retains the farthest observed aircraft and displays that maximum across the sector.
+The Raw ADS-B Map maintains a persistent empirical coverage envelope from positioned aircraft received through the selected aircraft source. For each 0.5° bearing sector, the bridge retains the farthest observed aircraft and displays that maximum across the sector.
 
 The envelope grows as farther observations are received and is intentionally not smoothed, preserving the actual observed maxima and directional variations in reception. The maximum observed distance is also shown in the map status display.
 
@@ -186,4 +186,27 @@ When using TFMS, enter the full four-letter airport identifier in `destination_a
 
 The observed coverage outline is hidden for TFMS because its boundary reflects the configured geographic filter rather than radio reception. Numeric track/course remains visible with a 16-point compass label, such as `274.4° (W)`; calculated course retains its `(course)` label.
 
-TFMS track history accepts a flight callsign (for example, `UCA4250`) and queries `http://192.168.0.1:8756/flight?callsign=uca4250`. ADS-B sources continue to accept a six-digit ICAO hex and use the configured history service.
+Track history requires a configured `history_url` for every input. TFMS uses callsign (for example, `UCA4250`); ADS-B uses six-digit ICAO hex. See the developer-only tool note below.
+
+
+## Developer-only track history
+
+Track history is a developer-only tool and appears only when `history_url` is configured. Contact the author for an API description. TFMS requests use callsign; ADS-B requests use ICAO hex. Configure the history service base URL; the bridge appends `/flight` and the appropriate query parameter.
+
+## Range-envelope resolution and GeoJSON evolution
+
+The current 1° / 360-bin range envelope is intentionally empirical, but at long range the angular width of a bin becomes visually coarse and produces a pronounced sawtooth boundary. A first refinement should experimentally increase angular resolution to 0.5° / 720 bins while preserving the existing 1° dataset as the known-good baseline. If 0.5° remains visibly coarse and traffic density is sufficient, 0.25° / 1,440 bins can be evaluated later.
+
+The objective is not cosmetic interpolation. Higher angular resolution allows successive real aircraft observations near the reception fringe to populate adjacent bins with their actual maxima. A smooth-looking envelope can then follow those observed flight maxima as an aircraft transitions from bin to bin, while retaining the underlying empirical measurements. The practical limit is sampling density rather than storage size: narrower bins take longer to populate and may become noisy when traffic is sparse.
+
+GeoJSON export should support the range envelope as depicted on the map, not only independent maximum-range points. The preferred export is a FeatureCollection containing both the ordered empirical maxima and a polygon/polyline representation of the rendered outer envelope. This preserves per-bin provenance while providing QGIS and other GIS tools a directly usable coverage boundary. Wedge features may remain available when the exact angular-bin footprint is useful.
+
+For incomplete datasets, the exporter must not silently convert large unobserved angular gaps into asserted coverage. Raw maxima remain authoritative; any derived smooth-looking boundary must be traceable to actual observed maxima and clearly distinguished from unsupported interpolation.
+
+### Implemented in v0.5.4
+
+The active envelope now uses 0.5° / 720 bins. On upgrade, the original 1° file is preserved byte-for-byte at `/data/range-coverage.json.1-degree-baseline.json` and embedded as `baseline_1_degree` in the new JSON. **Export 1° baseline** on the status page downloads that reference dataset.
+
+Legacy import and migration seed each 1° maximum into two adjacent 0.5° bins: 12° becomes 12° and 12.5°, and 359° becomes 359° and 359.5°. Both copies retain `legacy_adjacent_seed` provenance and the original bearing/coordinates; they are coarse legacy estimates, not two independently observed maxima. Seeding works without Home. Each bin retains the farther maximum until a farther real observation replaces its seed. Existing 0.5° installations also seed the preserved baseline on restart. Only the old winning maxima survive migration; previously discarded observations cannot be recovered.
+
+GeoJSON now contains ordered empirical Point features and the same stepped envelope coordinates used by the map. Incomplete coverage produces open MultiLineString runs, broken at every empty bin; a Polygon is emitted only when all 720 bins are populated. The derived bin footprint is explicitly labeled and remains distinct from the raw observed positions. The 0.25° experiment and optional wedge features remain future work.

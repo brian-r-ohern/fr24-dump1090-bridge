@@ -20,6 +20,8 @@ from urllib.request import HTTPDigestAuthHandler, HTTPPasswordMgrWithDefaultReal
 
 from swim_tfms import SwimTfmsClient, parse_tfms_tracks, update_tfms_course
 
+BUILD_VERSION = "0.5.4"
+
 CONFIG_PATH = os.environ.get("FR24_OPTIONS_PATH", "/data/options.json")
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 8085
@@ -32,10 +34,10 @@ SBS_SOCKET_TIMEOUT = 5.0
 VALID_SOURCES = ("sbs_30003", "flights_js", "aircraft_json", "swim_tfms")
 OSM_TILE_BASE = "https://tile.openstreetmap.org"
 OSM_TILE_CACHE = os.environ.get("FR24_TILE_CACHE", "/data/map-tile-cache-v2")
-OSM_TILE_USER_AGENT = "FR24-dump1090-Bridge/0.5.3 (+https://github.com/brian-r-ohern/fr24-dump1090-bridge)"
+OSM_TILE_USER_AGENT = "FR24-dump1090-Bridge/0.5.4 (+https://github.com/brian-r-ohern/fr24-dump1090-bridge)"
 OSM_TILE_FALLBACK_TTL = 7 * 24 * 60 * 60
 OSM_TILE_TIMEOUT = 10
-TILE_PROXY_BUILD = "v0.5.3"
+TILE_PROXY_BUILD = "v" + BUILD_VERSION
 tile_proxy_requests = 0
 tile_proxy_cache_hits = 0
 tile_proxy_upstream_fetches = 0
@@ -161,13 +163,16 @@ tracker_enrichment_cache_seconds = 2.0
 tracker_available_logged = None
 tracker_ever_detected = False
 
-# Persistent empirical receiver-coverage envelope. Each integer bearing bin
-# retains only the farthest aircraft position ever observed in that 1-degree
-# sector. Empty bins remain empty on disk; the map simply connects successive
-# populated bins to form a continuous observed-range outline.
+# Empirical 0.5-degree maxima; preserve legacy 1-degree data separately.
+# Legacy 1-degree imports explicitly seed adjacent bins and retain provenance.
 COVERAGE_PATH = os.environ.get("FR24_COVERAGE_PATH", "/data/range-coverage.json")
 COVERAGE_FLUSH_SECONDS = 30.0
-coverage_bins = [None] * 360
+coverage_io_lock = threading.Lock()
+COVERAGE_BIN_DEGREES = 0.5
+COVERAGE_BIN_COUNT = 720
+coverage_baseline = None
+coverage_pending = []
+coverage_bins = [None] * COVERAGE_BIN_COUNT
 coverage_dirty = False
 coverage_generation = 0
 coverage_last_flush = 0.0
@@ -506,7 +511,7 @@ def home_marker_updater():
 def map_config():
     with lock:
         marker = dict(home_marker) if home_marker else None
-    return {"source": CFG["source"], "coverage_outline_enabled": CFG["source"] != "swim_tfms", "home": marker, "destination_airport": CFG["destination_airport"] or None, "enrichment_source": CFG["enrichment_source"], "track_history_available": CFG["source"] == "swim_tfms" or bool(CFG["history_url"]), "track_history_query": "callsign" if CFG["source"] == "swim_tfms" else "hex"}
+    return {"source": CFG["source"], "coverage_outline_enabled": CFG["source"] != "swim_tfms", "home": marker, "destination_airport": CFG["destination_airport"] or None, "enrichment_source": CFG["enrichment_source"], "track_history_available": bool(CFG["history_url"]), "track_history_query": "callsign" if CFG["source"] == "swim_tfms" else "hex"}
 
 
 def _coverage_distance_bearing(lat1, lon1, lat2, lon2):
@@ -523,59 +528,131 @@ def _coverage_distance_bearing(lat1, lon1, lat2, lon2):
     return distance_nm, bearing
 
 
+def _validated_coverage_bins(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("coverage import must be a JSON object")
+    resolution = payload.get("bin_degrees", 1)
+    if isinstance(resolution, bool) or resolution not in (1, 0.5):
+        raise ValueError("coverage import must use 1 or 0.5-degree bins")
+    bins = payload.get("bins")
+    if not isinstance(bins, list) or len(bins) > int(360 / resolution):
+        raise ValueError("invalid coverage bins array")
+    clean_bins, seen = [], set()
+    for item in bins:
+        if not isinstance(item, dict):
+            raise ValueError("every coverage bin must be an object")
+        bearing = item.get("bearing")
+        if isinstance(bearing, bool) or not isinstance(bearing, (int, float)) or not math.isfinite(bearing) or not 0 <= bearing < 360 or bearing / resolution != int(bearing / resolution):
+            raise ValueError("coverage bearing must align with the source resolution")
+        if bearing in seen:
+            raise ValueError(f"duplicate coverage bearing {bearing}")
+        seen.add(bearing)
+        for key, low, high in (("distance_nm", 0, float("inf")), ("latitude", -90, 90), ("longitude", -180, 180)):
+            value = item.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f"invalid {key} for bearing {bearing}")
+        clean = dict(item)
+        clean.setdefault("first_observed", clean.get("observed"))
+        clean.setdefault("update_count", 1)
+        clean_bins.append(clean)
+    return resolution, clean_bins
+
+
+def _coverage_index(bearing):
+    return int(math.floor((bearing % 360) / COVERAGE_BIN_DEGREES + 0.5)) % COVERAGE_BIN_COUNT
+
+
+def _merge_coverage_item(item, resolution, marker, result):
+    clean = dict(item)
+    if resolution == 1:
+        clean["source_bin_degrees"] = 1
+        clean["source_bearing"] = item["bearing"]
+        clean["provenance"] = "legacy_adjacent_seed"
+        clean["seeded"] = True
+        if marker:
+            _, actual_bearing = _coverage_distance_bearing(marker["latitude"], marker["longitude"], item["latitude"], item["longitude"])
+            clean["measured_bearing"] = actual_bearing
+        indexes = [int(item["bearing"] * 2), (int(item["bearing"] * 2) + 1) % COVERAGE_BIN_COUNT]
+    else:
+        indexes = [int(item["bearing"] / COVERAGE_BIN_DEGREES)]
+    for index in indexes:
+        target = dict(clean)
+        target["bearing"] = index * COVERAGE_BIN_DEGREES
+        current = coverage_bins[index]
+        if current is None:
+            coverage_bins[index] = target
+            result["added"] += 1
+        elif float(target["distance_nm"]) > float(current["distance_nm"]):
+            coverage_bins[index] = target
+            result["replaced"] += 1
+        else:
+            result["retained"] += 1
+
+
 def load_coverage():
-    global coverage_bins, coverage_loaded, coverage_stats
+    global coverage_bins, coverage_loaded, coverage_stats, coverage_baseline, coverage_pending, coverage_dirty, coverage_generation
     try:
         with open(COVERAGE_PATH, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        bins = payload.get("bins", []) if isinstance(payload, dict) else []
-        loaded = [None] * 360
-        if isinstance(bins, list):
+            original = handle.read()
+        payload = json.loads(original)
+        resolution, bins = _validated_coverage_bins(payload)
+        baseline = payload if resolution == 1 else payload.get("baseline_1_degree")
+        if baseline is not None and _validated_coverage_bins(baseline)[0] != 1:
+            raise ValueError("baseline must use 1-degree bins")
+        pending = payload.get("pending_1_degree", []) if resolution == 0.5 else []
+        if pending:
+            _, pending = _validated_coverage_bins({"bin_degrees": 1, "bins": pending})
+        # Archive exact original bytes before allowing a legacy file to be replaced.
+        if resolution == 1:
+            backup = COVERAGE_PATH + ".1-degree-baseline.json"
+            try:
+                with open(backup, "x", encoding="utf-8") as handle:
+                    handle.write(original)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except FileExistsError:
+                pass
+        with lock:
+            coverage_bins = [None] * COVERAGE_BIN_COUNT
+            coverage_baseline = baseline
+            coverage_pending = []
+            marker = dict(home_marker) if home_marker else None
+            result = {"added": 0, "replaced": 0, "retained": 0, "pending": 0}
             for item in bins:
-                if not isinstance(item, dict):
-                    continue
-                bearing = item.get("bearing")
-                distance = item.get("distance_nm")
-                if isinstance(bearing, int) and 0 <= bearing < 360 and isinstance(distance, (int, float)) and distance >= 0:
-                    # v1 coverage files did not have first_observed/update_count.
-                    # Preserve the learned maximum and seed the new metadata from
-                    # the winning observation rather than resetting coverage.
-                    item = dict(item)
-                    item.setdefault("first_observed", item.get("observed"))
-                    item.setdefault("update_count", 1)
-                    loaded[bearing] = item
-
-        old_stats = payload.get("stats", {}) if isinstance(payload, dict) else {}
-        observed_times = [x.get("observed") for x in loaded if x and x.get("observed")]
-        first_times = [x.get("first_observed") for x in loaded if x and x.get("first_observed")]
-        populated = sum(x is not None for x in loaded)
-        stats = {
-            "collection_started": old_stats.get("collection_started") or (min(first_times) if first_times else None),
-            "total_updates": int(old_stats.get("total_updates", populated)),
-            "first_fills": int(old_stats.get("first_fills", populated)),
-            "record_replacements": int(old_stats.get("record_replacements", 0)),
-            "last_update": old_stats.get("last_update") or (max(observed_times) if observed_times else None),
-            "hourly_updates": dict(old_stats.get("hourly_updates", {})) if isinstance(old_stats.get("hourly_updates", {}), dict) else {},
-        }
-        with lock:
-            coverage_bins = loaded
-            coverage_stats = stats
+                _merge_coverage_item(item, resolution, marker, result)
+            for item in pending:
+                _merge_coverage_item(item, 1, marker, result)
+            if resolution == 0.5 and baseline is not None:
+                for item in _validated_coverage_bins(baseline)[1]:
+                    _merge_coverage_item(item, 1, marker, result)
+            old_stats = payload.get("stats", {})
+            if isinstance(old_stats, dict):
+                coverage_stats.update(old_stats)
             coverage_loaded = True
-        print(f"[INFO] Coverage history loaded: {populated}/360 bearing bins", flush=True)
+            if resolution == 1 or pending or (resolution == 0.5 and (result["added"] or result["replaced"])):
+                coverage_dirty = True
+                coverage_generation += 1
+        print(f"[INFO] Coverage history loaded: {sum(x is not None for x in coverage_bins)}/{COVERAGE_BIN_COUNT} bins; {len(coverage_pending)} legacy positions pending Home", flush=True)
     except FileNotFoundError:
-        with lock:
-            coverage_loaded = True
-        print("[INFO] Coverage history initialized: 0/360 bearing bins", flush=True)
+        coverage_loaded = True
+        print(f"[INFO] Coverage history initialized: 0/{COVERAGE_BIN_COUNT} bearing bins", flush=True)
     except Exception as exc:
-        with lock:
-            coverage_loaded = True
-        print(f"[WARN] Coverage history could not be loaded; starting empty: {exc}", flush=True)
+        # Avoid overwriting unreadable data during startup.
+        coverage_loaded = False
+        print(f"[WARN] Coverage history could not be loaded; collection paused: {exc}", flush=True)
 
 
 def flush_coverage(force=False):
+    with coverage_io_lock:
+        _flush_coverage(force)
+
+
+def _flush_coverage(force=False):
     global coverage_dirty, coverage_last_flush
     now = time.time()
     with lock:
+        if not coverage_loaded:
+            return
         if not coverage_dirty and not force:
             return
         if not force and now - coverage_last_flush < COVERAGE_FLUSH_SECONDS:
@@ -584,7 +661,9 @@ def flush_coverage(force=False):
         stats = dict(coverage_stats)
         stats["hourly_updates"] = dict(coverage_stats.get("hourly_updates", {}))
         generation = coverage_generation
-    payload = {"version": 2, "bin_degrees": 1, "updated": iso_utc(now), "stats": stats, "bins": bins}
+        baseline = coverage_baseline
+        pending = [dict(x) for x in coverage_pending]
+    payload = {"version": 3, "bin_degrees": COVERAGE_BIN_DEGREES, "updated": iso_utc(now), "stats": stats, "bins": bins, "baseline_1_degree": baseline, "pending_1_degree": pending}
     tmp = COVERAGE_PATH + ".tmp"
     try:
         os.makedirs(os.path.dirname(COVERAGE_PATH) or ".", exist_ok=True)
@@ -611,8 +690,17 @@ def update_coverage_from_snapshot():
     with lock:
         marker = dict(home_marker) if home_marker else None
         aircraft = list(latest_data.get("aircraft", []))
-    if not marker:
+    if not marker or not coverage_loaded or CFG["source"] == "swim_tfms":
         return
+    with lock:
+        if coverage_pending:
+            pending = list(coverage_pending)
+            coverage_pending.clear()
+            result = {"added": 0, "replaced": 0, "retained": 0, "pending": 0}
+            for item in pending:
+                _merge_coverage_item(item, 1, marker, result)
+            coverage_dirty = True
+            coverage_generation += 1
     home_lat, home_lon = marker["latitude"], marker["longitude"]
     changed = False
     now = time.time()
@@ -626,7 +714,7 @@ def update_coverage_from_snapshot():
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             continue
         distance_nm, bearing = _coverage_distance_bearing(home_lat, home_lon, lat, lon)
-        bin_no = int(round(bearing)) % 360
+        bin_no = _coverage_index(bearing)
         with lock:
             current = coverage_bins[bin_no]
             if current is not None and float(current.get("distance_nm", -1)) >= distance_nm:
@@ -635,7 +723,10 @@ def update_coverage_from_snapshot():
             first_observed = observed if first_fill else current.get("first_observed") or current.get("observed") or observed
             update_count = 1 if first_fill else int(current.get("update_count", 1)) + 1
             coverage_bins[bin_no] = {
-                "bearing": bin_no,
+                "bearing": bin_no * COVERAGE_BIN_DEGREES,
+                "measured_bearing": bearing,
+                "source_bin_degrees": COVERAGE_BIN_DEGREES,
+                "provenance": "observed",
                 "distance_nm": round(distance_nm, 2),
                 "latitude": round(lat, 6),
                 "longitude": round(lon, 6),
@@ -663,80 +754,44 @@ def update_coverage_from_snapshot():
 
 
 def import_coverage_payload(payload):
-    """Validate and merge an exported /range-coverage payload into history."""
-    global coverage_dirty, coverage_generation, coverage_stats, coverage_last_import
-    if not isinstance(payload, dict):
-        raise ValueError("coverage import must be a JSON object")
-    if payload.get("bin_degrees", 1) != 1:
-        raise ValueError("coverage import must use 1-degree bins")
-    bins = payload.get("bins")
-    if not isinstance(bins, list):
-        raise ValueError("coverage import must contain a bins array")
-    if len(bins) > 360:
-        raise ValueError("coverage import contains more than 360 bins")
-
-    validated = []
-    seen = set()
-    for item in bins:
-        if not isinstance(item, dict):
-            raise ValueError("every coverage bin must be an object")
-        bearing = item.get("bearing")
-        distance = item.get("distance_nm")
-        if isinstance(bearing, bool) or not isinstance(bearing, int) or not 0 <= bearing < 360:
-            raise ValueError("coverage bearing must be an integer from 0 through 359")
-        if bearing in seen:
-            raise ValueError(f"duplicate coverage bearing {bearing}")
-        seen.add(bearing)
-        if isinstance(distance, bool) or not isinstance(distance, (int, float)) or not math.isfinite(float(distance)) or distance < 0:
-            raise ValueError(f"invalid distance_nm for bearing {bearing}")
-        lat, lon = item.get("latitude"), item.get("longitude")
-        if isinstance(lat, bool) or isinstance(lon, bool) or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
-            raise ValueError(f"missing/invalid coordinates for bearing {bearing}")
-        if not math.isfinite(float(lat)) or not math.isfinite(float(lon)) or not -90 <= float(lat) <= 90 or not -180 <= float(lon) <= 180:
-            raise ValueError(f"out-of-range coordinates for bearing {bearing}")
-        clean = dict(item)
-        clean["bearing"] = bearing
-        clean["distance_nm"] = round(float(distance), 2)
-        clean["latitude"] = round(float(lat), 6)
-        clean["longitude"] = round(float(lon), 6)
-        clean.setdefault("first_observed", clean.get("observed"))
-        clean.setdefault("update_count", 1)
-        validated.append(clean)
-
-    imported_stats = payload.get("stats", {})
-    if not isinstance(imported_stats, dict):
-        imported_stats = {}
-    result = {"received": len(validated), "added": 0, "replaced": 0, "retained": 0}
+    """Merge native maxima or explicitly seed two adjacent bins per legacy sector."""
+    global coverage_dirty, coverage_generation, coverage_last_import, coverage_baseline
+    resolution, bins = _validated_coverage_bins(payload)
+    # Validate embedded migration data before changing any live state.
+    baseline = payload.get("baseline_1_degree")
+    if baseline is not None:
+        if _validated_coverage_bins(baseline)[0] != 1:
+            raise ValueError("baseline must use 1-degree bins")
+    pending = payload.get("pending_1_degree", [])
+    if pending:
+        _, pending = _validated_coverage_bins({"bin_degrees": 1, "bins": pending})
+    if not coverage_loaded:
+        raise ValueError("coverage history failed to load; repair it before importing")
+    result = {"received": len(bins), "added": 0, "replaced": 0, "retained": 0, "pending": 0}
     with lock:
-        for item in validated:
-            bearing = item["bearing"]
-            current = coverage_bins[bearing]
-            if current is None:
-                coverage_bins[bearing] = item
-                result["added"] += 1
-            elif float(item["distance_nm"]) > float(current.get("distance_nm", -1)):
-                coverage_bins[bearing] = item
-                result["replaced"] += 1
-            else:
-                result["retained"] += 1
-
-        # Preserve the oldest known collection start. Import counters are not
-        # added to observation counters because an import is not a reception.
-        starts = [x for x in (coverage_stats.get("collection_started"), imported_stats.get("collection_started")) if x]
-        if starts:
-            coverage_stats["collection_started"] = min(starts)
-        if not coverage_stats.get("last_update") and imported_stats.get("last_update"):
-            coverage_stats["last_update"] = imported_stats.get("last_update")
+        marker = dict(home_marker) if home_marker else None
+        if coverage_baseline is None:
+            coverage_baseline = json.loads(json.dumps(payload if resolution == 1 else baseline))
+        for item in bins:
+            _merge_coverage_item(item, resolution, marker, result)
+        for item in pending:
+            _merge_coverage_item(item, 1, marker, result)
+        imported_stats = payload.get("stats", {})
+        if isinstance(imported_stats, dict):
+            starts = [x for x in (coverage_stats.get("collection_started"), imported_stats.get("collection_started")) if x]
+            if starts:
+                coverage_stats["collection_started"] = min(starts)
         coverage_last_import = iso_utc(time.time())
         coverage_dirty = True
         coverage_generation += 1
-
+        result["populated_bins"] = sum(x is not None for x in coverage_bins)
     flush_coverage(force=True)
-    result["populated_bins"] = sum(x is not None for x in coverage_bins)
+    result["total_bins"] = COVERAGE_BIN_COUNT
     result["last_import"] = coverage_last_import
     return result
 
 def coverage_updater():
+    refresh_home_marker()
     load_coverage()
     while True:
         try:
@@ -753,49 +808,67 @@ def coverage_payload():
         stats = dict(coverage_stats)
         stats["hourly_updates"] = dict(coverage_stats.get("hourly_updates", {}))
         available = bool(home_marker)
-    return {"available": available, "bin_degrees": 1, "populated_bins": len(bins), "total_bins": 360, "last_import": coverage_last_import, "stats": stats, "bins": bins}
+        marker = dict(home_marker) if home_marker else None
+        baseline = coverage_baseline
+        pending = [dict(x) for x in coverage_pending]
+    return {"envelope_segments": coverage_envelope_segments(bins, marker), "available": available, "version": 3, "bin_degrees": COVERAGE_BIN_DEGREES, "populated_bins": len(bins), "total_bins": COVERAGE_BIN_COUNT, "baseline_1_degree": baseline, "pending_1_degree": pending, "last_import": coverage_last_import, "stats": stats, "bins": bins}
+
+
+def _coverage_destination(marker, bearing, distance_nm):
+    distance = distance_nm / 3440.065
+    theta = math.radians(bearing)
+    lat, lon = math.radians(marker["latitude"]), math.radians(marker["longitude"])
+    lat2 = math.asin(math.sin(lat) * math.cos(distance) + math.cos(lat) * math.sin(distance) * math.cos(theta))
+    lon2 = lon + math.atan2(math.sin(theta) * math.sin(distance) * math.cos(lat), math.cos(distance) - math.sin(lat) * math.sin(lat2))
+    return [((math.degrees(lon2) + 540) % 360) - 180, math.degrees(lat2)]
+
+
+def coverage_envelope_segments(bins, marker):
+    """Stepped bin footprints; break at every empty sector, including wraparound."""
+    if not marker or not bins:
+        return []
+    by_index = {int(x["bearing"] / COVERAGE_BIN_DEGREES): x for x in bins}
+    # Start just after a gap so north-crossing observed runs stay connected.
+    missing = next((i for i in range(COVERAGE_BIN_COUNT) if i not in by_index), None)
+    start = 0 if missing is None else (missing + 1) % COVERAGE_BIN_COUNT
+    segments, run = [], []
+    for offset in range(COVERAGE_BIN_COUNT):
+        i = (start + offset) % COVERAGE_BIN_COUNT
+        item = by_index.get(i)
+        if item is None:
+            if run:
+                segments.append(run)
+                run = []
+            continue
+        center = i * COVERAGE_BIN_DEGREES
+        left = _coverage_destination(marker, center - COVERAGE_BIN_DEGREES / 2, item["distance_nm"])
+        right = _coverage_destination(marker, center + COVERAGE_BIN_DEGREES / 2, item["distance_nm"])
+        run.extend([left, right])
+    if run:
+        if missing is None:
+            run.append(run[0])
+        segments.append(run)
+    return segments
 
 
 def coverage_geojson_payload():
-    """Return the live coverage table as a QGIS-friendly GeoJSON FeatureCollection."""
+    """Ordered empirical points plus the exact map envelope, without gap bridging."""
     coverage = coverage_payload()
-    bins = sorted(coverage.get("bins", []), key=lambda item: int(item.get("bearing", 0)))
+    bins = coverage["bins"]
     features = []
-
-    coordinates = [[float(item["longitude"]), float(item["latitude"])] for item in bins]
-    if len(coordinates) >= 2:
-        line_coordinates = coordinates + [coordinates[0]]
-        stats = coverage.get("stats", {}) if isinstance(coverage.get("stats"), dict) else {}
+    segments = coverage["envelope_segments"]
+    if segments:
+        complete = len(bins) == COVERAGE_BIN_COUNT
         features.append({
             "type": "Feature",
-            "properties": {
-                "name": "Maximum observed range",
-                "bin_degrees": coverage.get("bin_degrees", 1),
-                "populated_bins": coverage.get("populated_bins", len(bins)),
-                "total_bins": coverage.get("total_bins", 360),
-                "collection_started": stats.get("collection_started"),
-                "last_update": stats.get("last_update"),
-            },
-            "geometry": {"type": "LineString", "coordinates": line_coordinates},
+            "properties": {"name": "Rendered empirical range envelope", "representation": "derived_bin_footprint", "bin_degrees": COVERAGE_BIN_DEGREES, "populated_bins": len(bins), "total_bins": COVERAGE_BIN_COUNT, "complete": complete, "gap_policy": "break_at_every_unobserved_bin", "interpolation": "none", "legacy_seed_bins": sum(x.get("provenance") == "legacy_adjacent_seed" for x in bins)},
+            "geometry": {"type": "Polygon", "coordinates": [segments[0]]} if complete else {"type": "MultiLineString", "coordinates": segments},
         })
-
-    for item in bins:
+    for order, item in enumerate(bins):
         properties = {key: value for key, value in item.items() if key not in ("latitude", "longitude")}
-        properties["name"] = f"Bearing {int(item['bearing']):03d}°"
-        features.append({
-            "type": "Feature",
-            "properties": properties,
-            "geometry": {
-                "type": "Point",
-                "coordinates": [float(item["longitude"]), float(item["latitude"])],
-            },
-        })
-
-    return {
-        "type": "FeatureCollection",
-        "name": "FR24 dump1090 Bridge range coverage",
-        "features": features,
-    }
+        properties.update({"name": f"Bearing {item['bearing']:05.1f}°", "order": order, "representation": "legacy_sector_seed" if item.get("provenance") == "legacy_adjacent_seed" else "empirical_maximum", "bin_degrees": COVERAGE_BIN_DEGREES})
+        features.append({"type": "Feature", "properties": properties, "geometry": {"type": "Point", "coordinates": [item["longitude"], item["latitude"]]}})
+    return {"type": "FeatureCollection", "name": "FR24 dump1090 Bridge range coverage", "features": features}
 
 
 def _entity_attributes(entity_id):
@@ -1199,7 +1272,7 @@ def snapshot_status():
         else:
             feed_status, receiver = "ok", "connected"
         result = {
-            "service_status": "ok", "source": source, "feed_status": feed_status,
+            "build_version": BUILD_VERSION, "coverage_bin_degrees": COVERAGE_BIN_DEGREES, "coverage_total_bins": COVERAGE_BIN_COUNT, "service_status": "ok", "source": source, "feed_status": feed_status,
             "receiver": receiver, "uptime_seconds": round(now - START_TIME, 1),
             "poll_interval_seconds": CFG["poll_interval"] if source == "flights_js" else CFG["aircraft_json_poll_interval"],
             "last_success": iso_utc(success_time),
@@ -1242,7 +1315,7 @@ def snapshot_status():
         age = None if last_msg is None else max(0.0, now - last_msg)
         feed_status = "ok" if connected and age is not None and age <= UNHEALTHY_AFTER_SECONDS else ("degraded" if connected else "unavailable")
         return {
-            "service_status": "ok", "source": "swim_tfms", "feed_status": feed_status,
+            "build_version": BUILD_VERSION, "coverage_bin_degrees": COVERAGE_BIN_DEGREES, "coverage_total_bins": COVERAGE_BIN_COUNT, "service_status": "ok", "source": "swim_tfms", "feed_status": feed_status,
             "receiver": "connected" if connected else "disconnected",
             "uptime_seconds": round(now - START_TIME, 1), "connected": connected,
             "last_message_age_seconds": None if age is None else round(age, 1),
@@ -1258,7 +1331,7 @@ def snapshot_status():
         }
 
     return {
-        "service_status": "ok", "source": "sbs_30003", "feed_status": feed_status,
+        "build_version": BUILD_VERSION, "coverage_bin_degrees": COVERAGE_BIN_DEGREES, "coverage_total_bins": COVERAGE_BIN_COUNT, "service_status": "ok", "source": "sbs_30003", "feed_status": feed_status,
         "receiver": receiver, "uptime_seconds": round(now - START_TIME, 1),
         "sbs_port": CFG["sbs_port"], "snapshot_interval_seconds": SBS_SNAPSHOT_INTERVAL,
         "last_message": iso_utc(success_time),
@@ -1291,13 +1364,13 @@ function popup(ac,flags,key,orientation){const t=trackerFor(key),title=(t.flight
 function icon(track,flags){const d=Number.isFinite(Number(track))?Number(track):0,visual=d,classes=['plane'];if(flags.military)classes.push('military');if(flags.closest)classes.push('closest');if(flags.origin)classes.push('origin');if(flags.destination)classes.push('destination');const planeSvg='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5 14.2 9l6.8 4v2l-6.8-1.8-.7 5.2 2.5 1.8v1.5L12 20.5 8 21.7v-1.5l2.5-1.8-.7-5.2L3 15v-2l6.8-4L12 1.5Z"/></svg>';return L.divIcon({className:'',html:`<div class="${classes.join(' ')}" style="transform:rotate(${visual}deg);--counter-rotation:${-visual}deg">${planeSvg}</div>`,iconSize:[24,24],iconAnchor:[12,12]})}
 function stabilizeMap(){requestAnimationFrame(()=>requestAnimationFrame(()=>{map.invalidateSize({animate:false,pan:false});if(coverageLine)coverageLine.redraw();if(trackLine)trackLine.redraw()}))}function fitAircraft(){if(lastBounds&&lastBounds.isValid()){map.invalidateSize({animate:false,pan:false});map.fitBounds(lastBounds.pad(.08),{maxZoom:10,animate:false});stabilizeMap()}}document.getElementById('fit').addEventListener('click',fitAircraft);const mapContainer=document.getElementById('map');if(window.ResizeObserver)new ResizeObserver(()=>stabilizeMap()).observe(mapContainer);document.addEventListener('visibilitychange',()=>{if(!document.hidden)stabilizeMap()});window.addEventListener('pageshow',stabilizeMap);window.addEventListener('focus',stabilizeMap);map.on('zoomend moveend',()=>{if(coverageLine)coverageLine.redraw();if(trackLine)trackLine.redraw()});
 function trackerLabel(){if(enrichmentSource==='none')return 'Disabled';const state=enrichment.tracker_state||(enrichment.available?'active':'awaiting');return state==='active'?'Detected / active':(state==='unavailable'?'Temporarily unavailable':'Awaiting detection')}
-function renderInfo(s){if(!s){infoEl.innerHTML='<span>Status</span><span class="bad">Unavailable</span>';return}const cls=s.feed_status==='ok'?'ok':(s.feed_status==='degraded'?'degraded':'bad');const rows=[['Feed',`<b class="${cls}">${esc(String(s.feed_status||'unknown').toUpperCase())}</b>`],['Source',esc(s.source)],['Receiver',esc(s.receiver)],['Messages',s.messages_received!=null?Number(s.messages_received).toLocaleString():'—'],['Message rate',s.message_rate_per_second!=null?`${esc(s.message_rate_per_second)} / sec`:'—'],['Aircraft',esc(s.aircraft_total)],['With position',esc(s.aircraft_with_position)],['Without position',esc(s.aircraft_without_position)],['Max range',maxObservedRange!=null?`${maxObservedRange.toFixed(1)} NM`:'—'],['Parse errors',s.parse_errors!=null?esc(s.parse_errors):'—'],['Reconnects',s.reconnections!=null?esc(s.reconnections):'—'],['Tracker',trackerLabel()],['O/D airport',destinationAirport||'—'],['Uptime',duration(s.uptime_seconds)]];infoEl.innerHTML=rows.map(([k,v])=>`<span>${esc(k)}</span><span>${v}</span>`).join('')}
+function renderInfo(s){if(!s){infoEl.innerHTML='<span>Status</span><span class="bad">Unavailable</span>';return}const cls=s.feed_status==='ok'?'ok':(s.feed_status==='degraded'?'degraded':'bad');const rows=[['Build',esc(s.build_version)],['Feed',`<b class="${cls}">${esc(String(s.feed_status||'unknown').toUpperCase())}</b>`],['Source',esc(s.source)],['Receiver',esc(s.receiver)],['Messages',s.messages_received!=null?Number(s.messages_received).toLocaleString():'—'],['Message rate',s.message_rate_per_second!=null?`${esc(s.message_rate_per_second)} / sec`:'—'],['Aircraft',esc(s.aircraft_total)],['With position',esc(s.aircraft_with_position)],['Without position',esc(s.aircraft_without_position)],['Max range',maxObservedRange!=null?`${maxObservedRange.toFixed(1)} NM`:'—'],['Parse errors',s.parse_errors!=null?esc(s.parse_errors):'—'],['Reconnects',s.reconnections!=null?esc(s.reconnections):'—'],['Tracker',trackerLabel()],['O/D airport',destinationAirport||'—'],['Uptime',duration(s.uptime_seconds)]];infoEl.innerHTML=rows.map(([k,v])=>`<span>${esc(k)}</span><span>${v}</span>`).join('')}
 function homeIcon(){const svg='<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 15.5 16 4l13 11.5-2.7 3L16 9.4 5.7 18.5Z" fill="#e35b4f" stroke="#fff" stroke-width="1.2"/><path d="M7.5 16.8 16 9.5l8.5 7.3V28h-6v-7h-5v7h-6Z" fill="#f2d6a2" stroke="#555" stroke-width="1"/></svg>';return L.divIcon({className:'',html:`<div class="home-marker">${svg}</div>`,iconSize:[28,28],iconAnchor:[14,24]})}
 async function refreshHome(){try{const r=await fetch('map-config',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),h=c?.home;inputSource=c?.source||null;coverageOutlineEnabled=c?.coverage_outline_enabled===true;if(!coverageOutlineEnabled&&coverageLine){map.removeLayer(coverageLine);coverageLine=null;maxObservedRange=null;}destinationAirport=c?.destination_airport||null;enrichmentSource=c?.enrichment_source||'adsb_tracker';trackHistoryAvailable=!!c?.track_history_available;document.getElementById('trackhex').dataset.query=c?.track_history_query||'hex';document.getElementById('trackhex').placeholder=c?.track_history_query==='callsign'?'Flight callsign':'ICAO hex';document.getElementById('trackhex').maxLength=c?.track_history_query==='callsign'?16:6;trackBox.style.display=trackHistoryAvailable?'block':'none';if(!h)return;const lat=Number(h.latitude),lon=Number(h.longitude),radius=Number(h.radius||0);if(!Number.isFinite(lat)||!Number.isFinite(lon))return;homeLatLng={lat,lon};if(!homeMarker)homeMarker=L.marker([lat,lon],{icon:homeIcon(),zIndexOffset:1000}).addTo(map).bindPopup('<b>Home</b>');else homeMarker.setLatLng([lat,lon]);if(radius>0){if(!homeCircle)homeCircle=L.circle([lat,lon],{radius,weight:1,fillOpacity:.05}).addTo(map);else{homeCircle.setLatLng([lat,lon]);homeCircle.setRadius(radius)}}}catch(err){console.warn('Home marker unavailable',err)}}
 async function refreshEnrichment(){try{const r=await fetch('tracker-enrichment',{cache:'no-store'});if(r.ok)enrichment=await r.json()}catch(err){enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}}}}
 function destinationPoint(origin,bearingDeg,distanceNm){const R=3440.065,d=distanceNm/R,t=bearingDeg*Math.PI/180,p1=origin.lat*Math.PI/180,l1=origin.lon*Math.PI/180;const p2=Math.asin(Math.sin(p1)*Math.cos(d)+Math.cos(p1)*Math.sin(d)*Math.cos(t));const l2=l1+Math.atan2(Math.sin(t)*Math.sin(d)*Math.cos(p1),Math.cos(d)-Math.sin(p1)*Math.sin(p2));return[p2*180/Math.PI,((l2*180/Math.PI+540)%360)-180]}
-function coverageSegments(bins){if(!homeLatLng)return[];const valid=bins.filter(x=>Number.isFinite(Number(x.bearing))&&Number.isFinite(Number(x.distance_nm))).sort((a,b)=>Number(a.bearing)-Number(b.bearing));if(!valid.length)return[];const by=new Map(valid.map(x=>[Number(x.bearing),x])),segments=[];let run=[];for(let b=0;b<360;b++){const x=by.get(b);if(!x){if(run.length){segments.push(run);run=[]}continue}const r=Number(x.distance_nm),left=destinationPoint(homeLatLng,b-.5,r),right=destinationPoint(homeLatLng,b+.5,r);if(!run.length)run.push(left);run.push(right);const next=by.get((b+1)%360);if(next&&b<359)run.push(destinationPoint(homeLatLng,b+.5,Number(next.distance_nm)));else if(run.length){segments.push(run);run=[]}}if(run.length)segments.push(run);if(by.has(359)&&by.has(0)&&segments.length>1){const last=segments.pop(),first=segments.shift(),r0=Number(by.get(0).distance_nm);segments.unshift(last.concat([destinationPoint(homeLatLng,359.5,r0)]).concat(first))}return segments}
-async function refreshCoverage(){if(!coverageOutlineEnabled)return;try{const r=await fetch('range-coverage',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),bins=Array.isArray(c.bins)?c.bins:[];const ranges=bins.map(x=>Number(x.distance_nm)).filter(Number.isFinite);maxObservedRange=ranges.length?Math.max(...ranges):null;const segs=coverageSegments(bins);if(segs.length){if(!coverageLine)coverageLine=L.polyline(segs,{color:'#ff1c1c',weight:2,opacity:.85,interactive:false,noClip:true}).addTo(map);else coverageLine.setLatLngs(segs);coverageLine.redraw()}else if(coverageLine){map.removeLayer(coverageLine);coverageLine=null}}catch(err){console.warn('Coverage outline unavailable',err)}}
+
+async function refreshCoverage(){if(!coverageOutlineEnabled)return;try{const r=await fetch('range-coverage',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),bins=Array.isArray(c.bins)?c.bins:[];const ranges=bins.map(x=>Number(x.distance_nm)).filter(Number.isFinite);maxObservedRange=ranges.length?Math.max(...ranges):null;const segs=(Array.isArray(c.envelope_segments)?c.envelope_segments:[]).map(run=>run.map(p=>[p[1],p[0]]));if(segs.length){if(!coverageLine)coverageLine=L.polyline(segs,{color:'#ff1c1c',weight:2,opacity:.85,interactive:false,noClip:true}).addTo(map);else coverageLine.setLatLngs(segs);coverageLine.redraw()}else if(coverageLine){map.removeLayer(coverageLine);coverageLine=null}}catch(err){console.warn('Coverage outline unavailable',err)}}
 function clearTrack(){if(trackLine){map.removeLayer(trackLine);trackLine=null}trackStatus.textContent=''}
 async function showTrack(){const hex=document.getElementById('trackhex').value.trim().toLowerCase();const queryType=document.getElementById('trackhex').dataset.query||'hex';if(!(queryType==='callsign'?/^[a-z0-9]{1,16}$/:/^[0-9a-f]{6}$/).test(hex)){trackStatus.textContent=queryType==='callsign'?'Flight callsign required':'6-digit hex required';return}trackStatus.textContent='Loading…';try{const r=await fetch(`track-history?${queryType}=${encodeURIComponent(hex)}`,{cache:'no-store'});const d=await r.json();if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);const fields=Array.isArray(d.trail_fields)?d.trail_fields:[],ilat=fields.indexOf('lat'),ilon=fields.indexOf('lon'),pts=(Array.isArray(d.trail)?d.trail:[]).map(row=>[Number(row[ilat]),Number(row[ilon])]).filter(p=>Number.isFinite(p[0])&&Number.isFinite(p[1]));clearTrack();if(pts.length<1){trackStatus.textContent='No positions';return}trackLine=L.polyline(pts,{weight:4,opacity:.75,interactive:false}).addTo(map);trackStatus.textContent=`${(d.callsign||d.query||hex).toUpperCase()} · ${pts.length} positions`;trackLine.bringToFront();stabilizeMap()}catch(err){trackStatus.textContent=err.message}}
 document.getElementById('trackshow').addEventListener('click',showTrack);document.getElementById('trackclear').addEventListener('click',clearTrack);document.getElementById('trackhex').addEventListener('keydown',e=>{if(e.key==='Enter')showTrack()});
@@ -1407,7 +1480,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/track-history":
             tfms = CFG["source"] == "swim_tfms"
-            if not tfms and not CFG["history_url"]:
+            if not CFG["history_url"]:
                 self.send_json({"error": "track history is not configured"}, 404)
                 return
             query = parse_qs(query_string, keep_blank_values=False)
@@ -1417,15 +1490,20 @@ class Handler(BaseHTTPRequestHandler):
             if not re.fullmatch(pattern, identity):
                 self.send_json({"error": "valid flight callsign required" if tfms else "hex must be a 6-digit ICAO address"}, 400)
                 return
-            base_url = "http://192.168.0.1:8756" if tfms else CFG["history_url"]
+            base_url = CFG["history_url"]
             try:
-                req = Request(f"{base_url}/flight?{query_key}={quote(identity)}", headers={"User-Agent": "FR24-dump1090-Bridge/0.5.3"})
+                req = Request(f"{base_url}/flight?{query_key}={quote(identity)}", headers={"User-Agent": "FR24-dump1090-Bridge/0.5.4"})
                 with urlopen(req, timeout=5) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                 self.send_json(payload)
             except Exception as exc:
                 print(f"[WARN] Track history lookup failed: {exc}", flush=True)
                 self.send_json({"error": "track history unavailable"}, 502)
+            return
+        if path == "/range-coverage-baseline":
+            with lock:
+                baseline = coverage_baseline
+            self.send_json(baseline if baseline is not None else {"error": "no 1-degree baseline available"}, 200 if baseline is not None else 404)
             return
         if path == "/range-coverage":
             self.send_json(coverage_payload())
@@ -1456,6 +1534,8 @@ table{{border-collapse:collapse;width:100%}}td{{padding:8px;border-bottom:1px so
 a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file]{{max-width:100%}}#coverage-result{{color:#aaa}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color:#ffd166}}.unhealthy{{color:#ff6b6b}}
 </style></head><body><h1>FR24 &rarr; dump1090</h1>
 <p>Feed status: <strong class=\"{s['feed_status']}\">{s['feed_status'].upper()}</strong></p><table>
+<tr><td>Coverage resolution</td><td>0.5° / 720 bins</td></tr>
+<tr><td>Build version</td><td>{s['build_version']}</td></tr>
 <tr><td>Input source</td><td>{s['source']}</td></tr><tr><td>Service health</td><td><span class=\"ok\">OK</span></td></tr>
 <tr><td>Receiver</td><td>{s['receiver']}</td></tr>"""
             if s["source"] in ("flights_js", "aircraft_json"):
@@ -1504,11 +1584,11 @@ a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file
 <a href=\"map-config\">/map-config</a> &mdash; map configuration
 </p>
 <h2>Range Coverage Backup / Restore</h2>
-<p><a href="range-coverage" download="range-coverage.json"><button type="button">Export coverage JSON</button></a> <a href="range-coverage.geojson" download="range-coverage.geojson"><button type="button">Export coverage GeoJSON</button></a></p>
+<p><a href="range-coverage-baseline" download="range-coverage-1-degree-baseline.json"><button type="button">Export 1° baseline</button></a> <a href="range-coverage" download="range-coverage.json"><button type="button">Export coverage JSON</button></a> <a href="range-coverage.geojson" download="range-coverage.geojson"><button type="button">Export coverage GeoJSON</button></a></p>
 <p><input id="coverage-file" type="file" accept="application/json,.json"> <button id="coverage-import" type="button">Import / merge coverage</button></p>
 <p id="coverage-result"><small>Import merges by bearing and keeps the farther range, so restoring an older backup will not overwrite a newer maximum.</small></p>
 <script>
-document.getElementById('coverage-import').addEventListener('click',async()=>{{const f=document.getElementById('coverage-file').files[0],out=document.getElementById('coverage-result');if(!f){{out.textContent='Select a coverage JSON file first.';return}}try{{const text=await f.text();JSON.parse(text);out.textContent='Importing...';const r=await fetch('range-coverage/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:text}});const x=await r.json();if(!r.ok||!x.ok)throw new Error(x.error||`HTTP ${{r.status}}`);out.textContent=`Import complete: ${{x.added}} added, ${{x.replaced}} replaced, ${{x.retained}} retained; ${{x.populated_bins}}/360 bins populated.`}}catch(e){{out.textContent='Import failed: '+e.message}}}});
+document.getElementById('coverage-import').addEventListener('click',async()=>{{const f=document.getElementById('coverage-file').files[0],out=document.getElementById('coverage-result');if(!f){{out.textContent='Select a coverage JSON file first.';return}}try{{const text=await f.text();JSON.parse(text);out.textContent='Importing...';const r=await fetch('range-coverage/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:text}});const x=await r.json();if(!r.ok||!x.ok)throw new Error(x.error||`HTTP ${{r.status}}`);out.textContent=`Import complete: ${{x.added}} added, ${{x.replaced}} replaced, ${{x.retained}} retained; ${{x.populated_bins}}/${{x.total_bins}} bins populated; ${{x.pending}} legacy positions pending Home.`}}catch(e){{out.textContent='Import failed: '+e.message}}}});
 </script>
 <h2>Diagnostics</h2><p><a href="tile-debug">/tile-debug</a> &mdash; map tile proxy diagnostics</p>
 <p><small>Map tiles are served internally through <code>/tiles/{{z}}/{{x}}/{{y}}.png</code>.</small></p>
