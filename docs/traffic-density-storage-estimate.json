@@ -1,0 +1,30 @@
+{
+  "scenario": "synthetic routes, not receiver measurements",
+  "observations": 360000,
+  "candidates": [
+    {
+      "zoom": 17,
+      "cell_height_m": 152.9,
+      "cell_width_m_at_42N": 227.2,
+      "occupied_cells": 18597,
+      "daily_cell_rows": 293887,
+      "sqlite_bytes": 36085760,
+      "bytes_per_daily_row": 122.8,
+      "extra_daily_altitude_passage_and_completeness_bytes_per_row": 12.5,
+      "flat_daily_json_bytes": 81506956,
+      "18_month_bytes_if_each_month_matches_this_30_day_scenario": 649543680
+    },
+    {
+      "zoom": 18,
+      "cell_height_m": 76.4,
+      "cell_width_m_at_42N": 113.6,
+      "occupied_cells": 53392,
+      "daily_cell_rows": 360000,
+      "sqlite_bytes": 46440448,
+      "bytes_per_daily_row": 129.0,
+      "extra_daily_altitude_passage_and_completeness_bytes_per_row": 11.7,
+      "flat_daily_json_bytes": 99840000,
+      "18_month_bytes_if_each_month_matches_this_30_day_scenario": 835928064
+    }
+  ]
+}

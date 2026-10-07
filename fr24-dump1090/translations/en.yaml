@@ -1,4 +1,11 @@
 configuration:
+  density_legacy_source:
+    name: Original source of existing density history
+    description: >-
+      For upgrades from v0.6.0–v0.6.2, explicitly identify the source that
+      collected the old untagged history. Leave unassigned when there is no
+      legacy history. History is preserved and density collection pauses
+      until attribution; new history is separated by selected source.
   source:
     name: Input source
     description: "Choose exactly one aircraft source: SBS/BaseStation TCP (recommended for FR24 receivers), FR24 flights.js, a standard dump1090/readsb aircraft.json URL, or FAA SWIM TFMS."
@@ -31,7 +38,8 @@ configuration:
     description: Maximum seconds to wait for each HTTP request attempt in flights.js mode.
   destination_airport:
     name: Origin/destination airport highlight
-    description: Optional IATA airport code (for example, SYR) to mark aircraft whose ADSB Aircraft Tracker route originates at or is destined for that airport.
+    description: >-
+      Airport code for origin/destination highlighting: IATA such as SYR for tracker routes, ICAO such as KSYR for US TFMS routes.
   swim_product:
     name: FAA SWIM product
     description: SWIM product adapter. v0.5.3 supports TFMS.
@@ -56,5 +64,17 @@ configuration:
   swim_aircraft_timeout:
     name: SWIM aircraft timeout
     description: Seconds without an accepted TFMS position before removing an aircraft from the current snapshot.
+  enrichment_source:
+    name: Route enrichment source
+    description: Use ADSB Tracker route metadata or disable enrichment.
+  history_url:
+    name: Developer track history URL
+    description: Optional developer-only API base URL. Contact the author for the API description.
+  swim_retry_count:
+    name: SWIM connection retry count
+    description: Number of Solace reconnection attempts.
+  swim_retry_interval_ms:
+    name: SWIM retry interval (ms)
+    description: Delay between Solace reconnection attempts.
 network:
   8085/tcp: FR24 dump1090/readsb-compatible HTTP service

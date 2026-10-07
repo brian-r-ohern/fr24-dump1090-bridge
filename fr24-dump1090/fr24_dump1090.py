@@ -2,6 +2,9 @@
 """FR24 receiver -> dump1090/readsb-compatible HTTP bridge for Home Assistant OS."""
 
 import ast
+import atexit
+import signal
+import sys
 import json
 import math
 import os
@@ -18,9 +21,18 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import HTTPDigestAuthHandler, HTTPPasswordMgrWithDefaultRealm, Request, build_opener, urlopen
 
+from bridge_config import validate_options
+from bridge_settings import settings_page, settings_post
+from traffic_density import DensityStore
+from density_archive import archive_file, geojson_file, restore_stream
+from density_envelopes import EnvelopeCache
+from pathlib import Path
+import shutil
+import sqlite3
+
 from swim_tfms import SwimTfmsClient, parse_tfms_tracks, update_tfms_course
 
-BUILD_VERSION = "0.5.4"
+BUILD_VERSION = "0.6.8"
 
 CONFIG_PATH = os.environ.get("FR24_OPTIONS_PATH", "/data/options.json")
 LISTEN_HOST = "0.0.0.0"
@@ -31,10 +43,19 @@ SBS_SNAPSHOT_INTERVAL = 1.0
 SBS_AIRCRAFT_TIMEOUT = 60.0
 SBS_RECONNECT_DELAY = 2.0
 SBS_SOCKET_TIMEOUT = 5.0
+SOURCE_LABELS = {"sbs_30003":"SBS", "flights_js":"FR24 HTTP", "aircraft_json":"ADSB JSON", "swim_tfms":"FAA TFMS"}
+SOURCE_PREFIXES = {"sbs_30003":"sbs", "flights_js":"fr24", "aircraft_json":"d1090", "swim_tfms":"faa"}
+
+def source_title():
+    return SOURCE_LABELS[CFG["source"]] + " → dump1090"
+
+def export_name(dataset, extension="json"):
+    return SOURCE_PREFIXES[CFG["source"]] + "-" + dataset + "." + extension
+
 VALID_SOURCES = ("sbs_30003", "flights_js", "aircraft_json", "swim_tfms")
 OSM_TILE_BASE = "https://tile.openstreetmap.org"
 OSM_TILE_CACHE = os.environ.get("FR24_TILE_CACHE", "/data/map-tile-cache-v2")
-OSM_TILE_USER_AGENT = "FR24-dump1090-Bridge/0.5.4 (+https://github.com/brian-r-ohern/fr24-dump1090-bridge)"
+OSM_TILE_USER_AGENT = "FR24-dump1090-Bridge/0.6.8 (+https://github.com/brian-r-ohern/fr24-dump1090-bridge)"
 OSM_TILE_FALLBACK_TTL = 7 * 24 * 60 * 60
 OSM_TILE_TIMEOUT = 10
 TILE_PROXY_BUILD = "v" + BUILD_VERSION
@@ -48,57 +69,7 @@ tile_proxy_last_referer = None
 
 def load_config():
     with open(CONFIG_PATH, "r", encoding="utf-8") as handle:
-        cfg = json.load(handle)
-    source = str(cfg.get("source", "sbs_30003")).strip() or "sbs_30003"
-    if source not in VALID_SOURCES:
-        raise ValueError(f"Invalid source {source!r}; expected one of: {', '.join(VALID_SOURCES)}")
-    receiver_host = str(cfg.get("receiver_host", "")).strip()
-    aircraft_json_url = str(cfg.get("aircraft_json_url", "")).strip()
-    username = str(cfg.get("username", ""))
-    password = str(cfg.get("password", ""))
-    if source in ("sbs_30003", "flights_js") and not receiver_host:
-        raise ValueError(f"{source} source requires receiver_host")
-    if source == "flights_js" and (not username.strip() or not password):
-        raise ValueError("flights_js source requires username and password")
-    if source == "aircraft_json":
-        parts = urlsplit(aircraft_json_url)
-        if parts.scheme not in ("http", "https") or not parts.netloc:
-            raise ValueError("aircraft_json source requires a valid http(s) aircraft_json_url")
-    swim_host = str(cfg.get("swim_host", "")).strip()
-    swim_vpn = str(cfg.get("swim_vpn", "")).strip()
-    swim_username = str(cfg.get("swim_username", "")).strip()
-    swim_password = str(cfg.get("swim_password", ""))
-    swim_queue = str(cfg.get("swim_queue", "")).strip()
-    if source == "swim_tfms":
-        missing = [name for name, value in (("swim_host", swim_host), ("swim_vpn", swim_vpn),
-                  ("swim_username", swim_username), ("swim_password", swim_password), ("swim_queue", swim_queue)) if not value]
-        if missing:
-            raise ValueError("swim_tfms source requires: " + ", ".join(missing))
-    return {
-        "source": source,
-        "receiver_host": receiver_host,
-        "receiver_port": int(cfg.get("receiver_port", 80)),
-        "sbs_port": int(cfg.get("sbs_port", 30003)),
-        "username": username,
-        "password": password,
-        "poll_interval": int(cfg.get("poll_interval", 2)),
-        "request_timeout": int(cfg.get("request_timeout", 3)),
-        "aircraft_json_url": aircraft_json_url,
-        "aircraft_json_poll_interval": int(cfg.get("aircraft_json_poll_interval", 1)),
-        "destination_airport": str(cfg.get("destination_airport", "")).strip().upper(),
-        "enrichment_source": str(cfg.get("enrichment_source", "adsb_tracker")).strip().lower() or "adsb_tracker",
-        "history_url": str(cfg.get("history_url", "")).strip().rstrip("/"),
-        "swim_product": str(cfg.get("swim_product", "tfms")).strip().lower() or "tfms",
-        "swim_host": swim_host,
-        "swim_vpn": swim_vpn,
-        "swim_username": swim_username,
-        "swim_password": swim_password,
-        "swim_queue": swim_queue,
-        "swim_radius_nm": float(cfg.get("swim_radius_nm", 250)),
-        "swim_aircraft_timeout": int(cfg.get("swim_aircraft_timeout", 120)),
-        "swim_retry_count": int(cfg.get("swim_retry_count", 3)),
-        "swim_retry_interval_ms": int(cfg.get("swim_retry_interval_ms", 3000)),
-    }
+        return validate_options(json.load(handle))
 
 
 CFG = load_config()
@@ -386,6 +357,33 @@ def transform(data):
     return {"now": int(time.time()), "messages": len(aircraft), "aircraft": aircraft}
 
 
+density_store = None
+density_startup_error = None
+
+
+def collect_density(aircraft, observed):
+    if density_store is None:
+        return
+    try:
+        density_store.observe(aircraft, observed, CFG["source"])
+        density_store.last_error = None
+    except Exception as exc:
+        density_store.last_error = str(exc)
+        print(f"[WARN] Traffic density collection failed: {exc}", flush=True)
+
+
+def density_maintenance():
+    while True:
+        time.sleep(30)
+        if density_store is not None:
+            try:
+                density_store.prune()
+                density_store.flush()
+            except Exception as exc:
+                density_store.last_error = str(exc)
+                print(f"[WARN] Traffic density maintenance failed: {exc}", flush=True)
+
+
 def flights_js_updater():
     global latest_data, last_success_time, last_poll_duration_ms
     global consecutive_failures, total_successful_polls, total_failed_polls
@@ -400,6 +398,7 @@ def flights_js_updater():
                 last_poll_duration_ms = round((finished - started) * 1000, 1)
                 consecutive_failures = 0
                 total_successful_polls += 1
+            collect_density(transformed["aircraft"], finished)
         except Exception as exc:
             with lock:
                 consecutive_failures += 1
@@ -459,6 +458,7 @@ def aircraft_json_updater():
                 last_poll_duration_ms = round((finished - started) * 1000, 1)
                 consecutive_failures = 0
                 total_successful_polls += 1
+            collect_density(transformed["aircraft"], finished)
         except Exception as exc:
             with lock:
                 consecutive_failures += 1
@@ -511,7 +511,7 @@ def home_marker_updater():
 def map_config():
     with lock:
         marker = dict(home_marker) if home_marker else None
-    return {"source": CFG["source"], "coverage_outline_enabled": CFG["source"] != "swim_tfms", "home": marker, "destination_airport": CFG["destination_airport"] or None, "enrichment_source": CFG["enrichment_source"], "track_history_available": bool(CFG["history_url"]), "track_history_query": "callsign" if CFG["source"] == "swim_tfms" else "hex"}
+    return {"source": CFG["source"], "title": source_title(), "coverage_outline_enabled": CFG["source"] != "swim_tfms", "home": marker, "destination_airport": CFG["destination_airport"] or None, "enrichment_source": CFG["enrichment_source"], "track_history_available": bool(CFG["history_url"]), "track_history_query": "callsign" if CFG["source"] == "swim_tfms" else "hex"}
 
 
 def _coverage_distance_bearing(lat1, lon1, lat2, lon2):
@@ -790,7 +790,27 @@ def import_coverage_payload(payload):
     result["last_import"] = coverage_last_import
     return result
 
+def clear_coverage():
+    global coverage_bins, coverage_baseline, coverage_pending, coverage_dirty
+    global coverage_generation, coverage_loaded, coverage_last_import
+    with coverage_io_lock:
+        with lock:
+            coverage_bins = [None] * COVERAGE_BIN_COUNT
+            coverage_baseline = None
+            coverage_pending = []
+            coverage_stats.update(collection_started=None,total_updates=0,first_fills=0,record_replacements=0,last_update=None,hourly_updates={})
+            coverage_generation += 1
+            coverage_loaded = True
+            coverage_dirty = True
+            coverage_last_import = None
+            Path(COVERAGE_PATH+'.1-degree-baseline.json').unlink(missing_ok=True)
+        _flush_coverage(True)
+    return {'cleared':'range_coverage'}
+
+
 def coverage_updater():
+    if CFG["source"] == "swim_tfms":
+        return
     refresh_home_marker()
     load_coverage()
     while True:
@@ -1093,6 +1113,7 @@ def sbs_publisher():
             sbs_message_rate = (sbs_total_messages - previous_count) / elapsed
             previous_count = sbs_total_messages
             previous_time = now
+        collect_density(aircraft, now)
 
 
 
@@ -1226,6 +1247,7 @@ def swim_publisher():
             latest_data = {'now': int(now), 'messages': swim_messages_received, 'aircraft': aircraft}
             if swim_last_message_time is not None:
                 last_success_time = swim_last_message_time
+        collect_density(aircraft, now)
         time.sleep(1.0)
 
 
@@ -1343,15 +1365,39 @@ def snapshot_status():
     }
 
 
-MAP_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Raw ADS-B Map</title>
+MAP_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>__SOURCE_TITLE__</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><style>
 html,body,#map{height:100%;margin:0;background:#111;font-family:system-ui,-apple-system,Segoe UI,sans-serif}#map{position:absolute;inset:0}
-.topbar{position:absolute;z-index:1000;top:10px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.90);color:#eee;border-radius:8px;padding:8px 12px;box-shadow:0 2px 8px #0008;display:flex;gap:12px;align-items:center;white-space:nowrap}.topbar strong{font-size:14px}.stats{font-size:12px;color:#ccc}.ok{color:#6ddc79}.bad{color:#ff6b6b}.degraded{color:#ffd166}.btn{border:1px solid #666;background:#222;color:#eee;border-radius:5px;padding:5px 8px;cursor:pointer}.btn:hover{background:#333}
-.info{position:absolute;z-index:1000;right:10px;bottom:24px;min-width:205px;background:rgba(17,17,17,.90);color:#ddd;border-radius:7px;padding:8px 10px;box-shadow:0 2px 8px #0008;font-size:11px}.info-title{font-weight:700;font-size:12px;margin-bottom:5px}.info-grid{display:grid;grid-template-columns:auto auto;gap:2px 12px}.info-grid span:nth-child(odd){color:#aaa}.info-grid span:nth-child(even){text-align:right}.nav{border-top:1px solid #444;margin-top:6px;padding-top:5px;text-align:right}.nav a{color:#8fc1ff;text-decoration:none}.plane{position:relative;width:24px;height:24px;color:#1367a8;filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white);transform-origin:50% 50%}.plane svg{display:block;width:24px;height:24px;fill:currentColor}.plane.military{color:#22a447}.plane.closest{filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white) drop-shadow(0 0 4px #f33) drop-shadow(0 0 7px #f33)}.plane.destination::after,.plane.origin::after{position:absolute;right:-7px;top:-7px;font:700 9px/13px system-ui;color:#111;background:#ffd166;border:1px solid #7a5a00;border-radius:50%;width:13px;height:13px;text-align:center;transform:rotate(var(--counter-rotation,0deg))}.plane.destination::after{content:"D"}.plane.origin::after{content:"O"}.plane.origin.destination::after{content:"O/D";width:21px;right:-11px;border-radius:7px}.leaflet-popup-content{min-width:190px}.ac-title{font-weight:700;font-size:15px}.ac-flags{margin-top:4px;color:#b22;font-size:11px}.ac-grid{margin-top:6px;display:grid;grid-template-columns:auto auto;gap:2px 10px}.ac-grid span:nth-child(odd){color:#666}.home-marker{width:28px;height:28px;filter:drop-shadow(0 0 2px white) drop-shadow(0 0 2px white)}.home-marker svg{display:block;width:28px;height:28px}.trackbox{display:none;position:absolute;z-index:1000;left:10px;bottom:24px;background:rgba(17,17,17,.90);color:#eee;border-radius:7px;padding:7px 8px;box-shadow:0 2px 8px #0008;font-size:11px}.trackbox input{width:78px;background:#222;color:#eee;border:1px solid #666;border-radius:4px;padding:4px;text-transform:uppercase}.trackbox .btn{padding:4px 6px}.track-status{margin-left:5px;color:#bbb}
-@media (max-width:600px){.topbar{left:8px;right:8px;top:8px;transform:none;white-space:normal;display:grid;grid-template-columns:1fr auto;gap:4px 8px;padding:7px 9px}.topbar strong{min-width:0}.topbar .stats{grid-column:1 / -1;grid-row:2}.topbar .btn{grid-column:2;grid-row:1}.info{right:6px;bottom:20px;max-width:calc(100vw - 32px)}}
-</style></head><body><div id="map"></div><div id="trackbox" class="trackbox"><input id="trackhex" maxlength="6" placeholder="ICAO hex"><button class="btn" id="trackshow">Track</button><button class="btn" id="trackclear">Clear</button><span id="trackstatus" class="track-status"></span></div><div class="topbar"><strong>Raw ADS-B Map</strong><span id="stats" class="stats">Loading aircraft…</span><button class="btn" id="fit">Fit aircraft</button></div><div class="info"><div class="info-title">Bridge status</div><div id="info-grid" class="info-grid"><span>Feed</span><span>Loading…</span></div><div class="nav"><a href="status-page">Status</a> · <a href="data/aircraft.json">aircraft.json</a></div></div>
+.topbar{position:absolute;z-index:1000;top:10px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.90);color:#eee;border-radius:8px;padding:8px 12px;box-shadow:0 2px 8px #0008;display:flex;gap:12px;align-items:center;white-space:normal;flex-wrap:wrap;justify-content:center;max-width:calc(100vw - 44px);width:max-content;box-sizing:border-box}.topbar strong{font-size:14px}.topbar{max-height:55vh;overflow:auto}.toolbar-main{display:flex;gap:8px 12px;align-items:center;justify-content:center;flex-wrap:wrap;width:100%}.analysis-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%;align-items:start}.analysis-controls{font-size:12px;min-width:0;border:1px solid #666;border-radius:5px;padding:6px 8px;box-sizing:border-box}.analysis-controls summary{cursor:pointer;min-height:24px}.analysis-body{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;padding-top:6px}.analysis-body>span{flex-basis:100%;font-size:11px;color:#ccc}.analysis-body label{white-space:normal}[hidden]{display:none!important}.stats{font-size:12px;color:#ccc}.ok{color:#6ddc79}.bad{color:#ff6b6b}.degraded{color:#ffd166}.btn{border:1px solid #666;background:#222;color:#eee;border-radius:5px;padding:5px 8px;cursor:pointer}.btn:hover{background:#333}
+.bottom-dock{position:absolute;z-index:1000;left:10px;right:10px;bottom:28px;display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px;pointer-events:none}.bottom-dock>*{pointer-events:auto;max-width:100%;box-sizing:border-box}.info{position:static;margin-left:auto;min-width:205px;background:rgba(17,17,17,.90);color:#ddd;border-radius:7px;padding:8px 10px;box-shadow:0 2px 8px #0008;font-size:11px}.info-title{font-weight:700;font-size:12px;cursor:pointer;min-height:28px;line-height:28px}.info-body{max-height:var(--status-body-height,40vh);overflow:auto;overscroll-behavior:contain}.info[open] .info-title{margin-bottom:5px}.info-grid{display:grid;grid-template-columns:auto auto;gap:2px 12px}.info-grid span:nth-child(odd){color:#aaa}.info-grid span:nth-child(even){text-align:right}.nav{border-top:1px solid #444;margin-top:6px;padding-top:5px;text-align:right}.nav a{color:#8fc1ff;text-decoration:none}.plane{position:relative;width:24px;height:24px;color:#1367a8;filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white);transform-origin:50% 50%}.plane svg{display:block;width:24px;height:24px;fill:currentColor}.plane.military{color:#22a447}.plane.closest{filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white) drop-shadow(0 0 4px #f33) drop-shadow(0 0 7px #f33)}.plane.destination::after,.plane.origin::after{position:absolute;right:-7px;top:-7px;font:700 9px/13px system-ui;color:#111;background:#ffd166;border:1px solid #7a5a00;border-radius:50%;width:13px;height:13px;text-align:center;transform:rotate(var(--counter-rotation,0deg))}.plane.destination::after{content:"D"}.plane.origin::after{content:"O"}.plane.origin.destination::after{content:"O/D";width:21px;right:-11px;border-radius:7px}.leaflet-popup-content{min-width:190px}.ac-title{font-weight:700;font-size:15px}.ac-flags{margin-top:4px;color:#b22;font-size:11px}.ac-grid{margin-top:6px;display:grid;grid-template-columns:auto auto;gap:2px 10px}.ac-grid span:nth-child(odd){color:#666}.home-marker{width:28px;height:28px;filter:drop-shadow(0 0 2px white) drop-shadow(0 0 2px white)}.home-marker svg{display:block;width:28px;height:28px}.trackbox{display:none;position:static;min-width:0;background:rgba(17,17,17,.90);color:#eee;border-radius:7px;padding:7px 8px;box-shadow:0 2px 8px #0008;font-size:11px}.trackbox input{width:78px;background:#222;color:#eee;border:1px solid #666;border-radius:4px;padding:4px;text-transform:uppercase}.trackbox .btn{padding:4px 6px}.track-status{margin-left:5px;color:#bbb}
+@media (max-width:900px),(max-height:600px){.topbar{left:60px;right:10px;top:10px;transform:none;max-width:none;width:auto;gap:5px 8px;padding:7px 9px}.topbar strong{min-width:0}.bottom-dock{left:8px;right:8px}.info{min-width:0}.track-status{overflow-wrap:anywhere}}
+@media (max-width:600px){.toolbar-main{justify-content:flex-start}.analysis-row{grid-template-columns:minmax(0,1fr)}.info-grid{grid-template-columns:minmax(0,1fr) auto}.info-grid span{overflow-wrap:anywhere}}
+
+</style></head><body><div id="map"></div><div class="topbar"><div class="toolbar-main"><strong>__SOURCE_TITLE__</strong><span id="stats" class="stats">Loading aircraft…</span><button class="btn" id="fit">Fit aircraft</button><button class="btn" id="density-refresh" hidden>Refresh density</button><label style="font-size:12px"><input id="density-toggle" type="checkbox"> Traffic Density</label><span id="density-state" style="font-size:11px"></span><label id="range-control" style="font-size:12px"><input id="range-toggle" type="checkbox" checked> Range ring</label></div><div class="analysis-row"><details id="density-options" class="analysis-controls" hidden><summary>Density altitude selection</summary><div class="analysis-body"><label><input class="density-band" value="low" type="checkbox"> Low &lt; 1,200 ft</label><label><input class="density-band" value="middle" type="checkbox"> Middle 1,200–17,999 ft</label><label><input class="density-band" value="high" type="checkbox"> High ≥ 18,000 ft</label><label><input class="density-band" value="all" type="checkbox" checked> All Traffic (includes Unknown)</label></div></details><details id="envelope-control" class="analysis-controls"><summary>Density envelopes · comparison</summary><div class="analysis-body"><span>30 days · cell centers · 0.5° bearings</span><button class="btn" id="envelope-generate">Generate envelopes</button><label style="color:#33d6dc"><input class="envelope-band" value="all" type="checkbox"> All</label><label style="color:#59d86b"><input class="envelope-band" value="low" type="checkbox" checked> Low</label><label style="color:#ffaa33"><input class="envelope-band" value="middle" type="checkbox" checked> Middle</label><label style="color:#ca8cff"><input class="envelope-band" value="high" type="checkbox" checked> High</label><span id="envelope-state">Generate on demand; existing range ring remains authoritative.</span></div></details></div></div><div class="bottom-dock"><div id="trackbox" class="trackbox"><input id="trackhex" maxlength="6" placeholder="ICAO hex"><button class="btn" id="trackshow">Track</button><button class="btn" id="trackclear">Clear</button><span id="trackstatus" class="track-status"></span></div><details id="bridge-info" class="info" open><summary class="info-title">Bridge status</summary><div class="info-body"><div id="info-grid" class="info-grid"><span>Feed</span><span>Loading…</span></div><div class="nav"><a href="status-page">Status</a> · <a href="data/aircraft.json">aircraft.json</a></div></div></details></div>
+<script id="overlay-layout">
+(()=>{
+  const info=document.getElementById('bridge-info'),body=info.querySelector('.info-body'),summary=info.querySelector('summary'),bar=document.querySelector('.topbar'),dock=document.querySelector('.bottom-dock'),track=document.getElementById('trackbox'),surface=document.getElementById('map');
+  const compact=window.matchMedia('(max-width:900px), (max-height:600px)');
+  info.open=!compact.matches;
+  function layout(){
+    const bounds=surface.getBoundingClientRect(),top=bar.getBoundingClientRect(),panel=info.getBoundingClientRect(),trail=track.getBoundingClientRect();
+    const zoom=document.querySelector('.leaflet-control-zoom'),zoomBottom=zoom?zoom.getBoundingClientRect().bottom:bounds.top+74;
+    const stacked=trail.height>0&&trail.bottom<=panel.top+1;
+    const chrome=summary.getBoundingClientRect().height+16+(info.open?5:0);
+    const bottom=Number.parseFloat(getComputedStyle(dock).bottom)||28;
+    const maximum=Math.max(0,Math.floor(bounds.bottom-bottom-Math.max(top.bottom,zoomBottom)-10-chrome-(stacked?trail.height+8:0)));
+    const height=maximum+'px';if(body.style.getPropertyValue('--status-body-height')!==height)body.style.setProperty('--status-body-height',height);
+  }
+  let pending=false;function schedule(){if(!pending){pending=true;requestAnimationFrame(()=>{pending=false;layout()})}}
+  info.addEventListener('toggle',schedule);window.addEventListener('resize',schedule);window.addEventListener('orientationchange',schedule);
+  if(compact.addEventListener)compact.addEventListener('change',()=>{info.open=!compact.matches;schedule()});else compact.addListener(()=>{info.open=!compact.matches;schedule()});
+  if(window.ResizeObserver){const observer=new ResizeObserver(schedule);for(const element of[bar,dock,track,surface])observer.observe(element)}
+  schedule();
+})();
+</script>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
-(()=>{const map=L.map('map',{zoomControl:true}).setView([39.5,-98.35],4);const tileTemplate='tiles/{z}/{x}/{y}.png?ref_origin='+encodeURIComponent(window.location.origin);const tiles=L.tileLayer(tileTemplate,{maxZoom:19,tileSize:256,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});tiles.on('tileerror',e=>console.warn('FR24 tile proxy error',e?.tile?.src||e));tiles.addTo(map);const markers=new Map();let homeMarker=null,homeCircle=null,coverageLine=null,trackLine=null,homeLatLng=null;let initialFit=false,lastBounds=null,maxObservedRange=null;let enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};let inputSource=null,coverageOutlineEnabled=false;let destinationAirport=null,enrichmentSource='adsb_tracker',trackHistoryAvailable=false;const statsEl=document.getElementById('stats'),infoEl=document.getElementById('info-grid'),trackBox=document.getElementById('trackbox'),trackStatus=document.getElementById('trackstatus');const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=(v,s='')=>(v===undefined||v===null||v==='')?'—':`${esc(v)}${s}`;const altitude=v=>v==='ground'?'Ground':(v===undefined||v===null?'—':`${Number(v).toLocaleString()} ft`);const signed=v=>(v===undefined||v===null)?'—':`${Number(v)>0?'+':''}${Number(v).toLocaleString()} ft/min`;const duration=v=>{v=Number(v);if(!Number.isFinite(v))return '—';const h=Math.floor(v/3600),m=Math.floor((v%3600)/60);return h?`${h}h ${m}m`:`${m}m`};
+(()=>{const map=L.map('map',{zoomControl:true}).setView([39.5,-98.35],4);for(const control of document.querySelectorAll('.topbar,.bottom-dock')){L.DomEvent.disableClickPropagation(control);L.DomEvent.disableScrollPropagation(control)}const tileTemplate='tiles/{z}/{x}/{y}.png?ref_origin='+encodeURIComponent(window.location.origin);const tiles=L.tileLayer(tileTemplate,{maxZoom:19,tileSize:256,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});tiles.on('tileerror',e=>console.warn('FR24 tile proxy error',e?.tile?.src||e));tiles.addTo(map);const markers=new Map();let homeMarker=null,homeCircle=null,coverageLine=null,trackLine=null,homeLatLng=null;let initialFit=false,lastBounds=null,maxObservedRange=null;let enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};const rangeToggle=document.getElementById('range-toggle');rangeToggle.addEventListener('change',()=>{if(!rangeToggle.checked&&coverageLine){map.removeLayer(coverageLine);coverageLine=null}if(rangeToggle.checked)refreshCoverage()});let inputSource=null,coverageOutlineEnabled=false;let destinationAirport=null,enrichmentSource='adsb_tracker',trackHistoryAvailable=false;const statsEl=document.getElementById('stats'),infoEl=document.getElementById('info-grid'),trackBox=document.getElementById('trackbox'),trackStatus=document.getElementById('trackstatus');const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=(v,s='')=>(v===undefined||v===null||v==='')?'—':`${esc(v)}${s}`;const altitude=v=>v==='ground'?'Ground':(v===undefined||v===null?'—':`${Number(v).toLocaleString()} ft`);const signed=v=>(v===undefined||v===null)?'—':`${Number(v)>0?'+':''}${Number(v).toLocaleString()} ft/min`;const duration=v=>{v=Number(v);if(!Number.isFinite(v))return '—';const h=Math.floor(v/3600),m=Math.floor((v%3600)/60);return h?`${h}h ${m}m`:`${m}m`};
 function flagsFor(key,ac={}){const military=new Set(enrichment.military_hexes||[]),origin=new Set(enrichment.origin_hexes||[]),destination=new Set(enrichment.destination_hexes||[]);return{military:military.has(key),closest:enrichment.closest_hex===key,origin:inputSource==='swim_tfms'?airportMatches(ac.route_origin,destinationAirport):origin.has(key),destination:inputSource==='swim_tfms'?airportMatches(ac.route_destination,destinationAirport):destination.has(key)}}
 function airportMatches(a,b){return !!a&&!!b&&String(a).trim().toUpperCase()===String(b).trim().toUpperCase()}
 function cardinalDirection(degrees){if(degrees===null||degrees===undefined||degrees==='')return '';const d=Number(degrees);if(!Number.isFinite(d))return '';const dirs=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];return dirs[Math.floor((((d%360)+360)%360+11.25)/22.5)%16]}
@@ -1366,11 +1412,49 @@ function stabilizeMap(){requestAnimationFrame(()=>requestAnimationFrame(()=>{map
 function trackerLabel(){if(enrichmentSource==='none')return 'Disabled';const state=enrichment.tracker_state||(enrichment.available?'active':'awaiting');return state==='active'?'Detected / active':(state==='unavailable'?'Temporarily unavailable':'Awaiting detection')}
 function renderInfo(s){if(!s){infoEl.innerHTML='<span>Status</span><span class="bad">Unavailable</span>';return}const cls=s.feed_status==='ok'?'ok':(s.feed_status==='degraded'?'degraded':'bad');const rows=[['Build',esc(s.build_version)],['Feed',`<b class="${cls}">${esc(String(s.feed_status||'unknown').toUpperCase())}</b>`],['Source',esc(s.source)],['Receiver',esc(s.receiver)],['Messages',s.messages_received!=null?Number(s.messages_received).toLocaleString():'—'],['Message rate',s.message_rate_per_second!=null?`${esc(s.message_rate_per_second)} / sec`:'—'],['Aircraft',esc(s.aircraft_total)],['With position',esc(s.aircraft_with_position)],['Without position',esc(s.aircraft_without_position)],['Max range',maxObservedRange!=null?`${maxObservedRange.toFixed(1)} NM`:'—'],['Parse errors',s.parse_errors!=null?esc(s.parse_errors):'—'],['Reconnects',s.reconnections!=null?esc(s.reconnections):'—'],['Tracker',trackerLabel()],['O/D airport',destinationAirport||'—'],['Uptime',duration(s.uptime_seconds)]];infoEl.innerHTML=rows.map(([k,v])=>`<span>${esc(k)}</span><span>${v}</span>`).join('')}
 function homeIcon(){const svg='<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 15.5 16 4l13 11.5-2.7 3L16 9.4 5.7 18.5Z" fill="#e35b4f" stroke="#fff" stroke-width="1.2"/><path d="M7.5 16.8 16 9.5l8.5 7.3V28h-6v-7h-5v7h-6Z" fill="#f2d6a2" stroke="#555" stroke-width="1"/></svg>';return L.divIcon({className:'',html:`<div class="home-marker">${svg}</div>`,iconSize:[28,28],iconAnchor:[14,24]})}
-async function refreshHome(){try{const r=await fetch('map-config',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),h=c?.home;inputSource=c?.source||null;coverageOutlineEnabled=c?.coverage_outline_enabled===true;if(!coverageOutlineEnabled&&coverageLine){map.removeLayer(coverageLine);coverageLine=null;maxObservedRange=null;}destinationAirport=c?.destination_airport||null;enrichmentSource=c?.enrichment_source||'adsb_tracker';trackHistoryAvailable=!!c?.track_history_available;document.getElementById('trackhex').dataset.query=c?.track_history_query||'hex';document.getElementById('trackhex').placeholder=c?.track_history_query==='callsign'?'Flight callsign':'ICAO hex';document.getElementById('trackhex').maxLength=c?.track_history_query==='callsign'?16:6;trackBox.style.display=trackHistoryAvailable?'block':'none';if(!h)return;const lat=Number(h.latitude),lon=Number(h.longitude),radius=Number(h.radius||0);if(!Number.isFinite(lat)||!Number.isFinite(lon))return;homeLatLng={lat,lon};if(!homeMarker)homeMarker=L.marker([lat,lon],{icon:homeIcon(),zIndexOffset:1000}).addTo(map).bindPopup('<b>Home</b>');else homeMarker.setLatLng([lat,lon]);if(radius>0){if(!homeCircle)homeCircle=L.circle([lat,lon],{radius,weight:1,fillOpacity:.05}).addTo(map);else{homeCircle.setLatLng([lat,lon]);homeCircle.setRadius(radius)}}}catch(err){console.warn('Home marker unavailable',err)}}
+async function refreshHome(){try{const r=await fetch('map-config',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),h=c?.home;inputSource=c?.source||null;coverageOutlineEnabled=c?.coverage_outline_enabled===true;document.getElementById('range-control').style.display=coverageOutlineEnabled?'':'none';rangeToggle.disabled=!coverageOutlineEnabled;document.getElementById('envelope-control').hidden=!coverageOutlineEnabled;if(!coverageOutlineEnabled)envelopeLayers.clearLayers();if(c?.title){document.title=c.title;document.querySelector('.topbar strong').textContent=c.title}if(!coverageOutlineEnabled&&coverageLine){map.removeLayer(coverageLine);coverageLine=null;maxObservedRange=null;}destinationAirport=c?.destination_airport||null;enrichmentSource=c?.enrichment_source||'adsb_tracker';trackHistoryAvailable=!!c?.track_history_available;document.getElementById('trackhex').dataset.query=c?.track_history_query||'hex';document.getElementById('trackhex').placeholder=c?.track_history_query==='callsign'?'Flight callsign':'ICAO hex';document.getElementById('trackhex').maxLength=c?.track_history_query==='callsign'?16:6;trackBox.style.display=trackHistoryAvailable?'block':'none';if(!h)return;const lat=Number(h.latitude),lon=Number(h.longitude),radius=Number(h.radius||0);if(!Number.isFinite(lat)||!Number.isFinite(lon))return;homeLatLng={lat,lon};if(!homeMarker)homeMarker=L.marker([lat,lon],{icon:homeIcon(),zIndexOffset:1000}).addTo(map).bindPopup('<b>Home</b>');else homeMarker.setLatLng([lat,lon]);if(radius>0){if(!homeCircle)homeCircle=L.circle([lat,lon],{radius,weight:1,fillOpacity:.05}).addTo(map);else{homeCircle.setLatLng([lat,lon]);homeCircle.setRadius(radius)}}}catch(err){console.warn('Home marker unavailable',err)}}
 async function refreshEnrichment(){try{const r=await fetch('tracker-enrichment',{cache:'no-store'});if(r.ok)enrichment=await r.json()}catch(err){enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}}}}
 function destinationPoint(origin,bearingDeg,distanceNm){const R=3440.065,d=distanceNm/R,t=bearingDeg*Math.PI/180,p1=origin.lat*Math.PI/180,l1=origin.lon*Math.PI/180;const p2=Math.asin(Math.sin(p1)*Math.cos(d)+Math.cos(p1)*Math.sin(d)*Math.cos(t));const l2=l1+Math.atan2(Math.sin(t)*Math.sin(d)*Math.cos(p1),Math.cos(d)-Math.sin(p1)*Math.sin(p2));return[p2*180/Math.PI,((l2*180/Math.PI+540)%360)-180]}
 
-async function refreshCoverage(){if(!coverageOutlineEnabled)return;try{const r=await fetch('range-coverage',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),bins=Array.isArray(c.bins)?c.bins:[];const ranges=bins.map(x=>Number(x.distance_nm)).filter(Number.isFinite);maxObservedRange=ranges.length?Math.max(...ranges):null;const segs=(Array.isArray(c.envelope_segments)?c.envelope_segments:[]).map(run=>run.map(p=>[p[1],p[0]]));if(segs.length){if(!coverageLine)coverageLine=L.polyline(segs,{color:'#ff1c1c',weight:2,opacity:.85,interactive:false,noClip:true}).addTo(map);else coverageLine.setLatLngs(segs);coverageLine.redraw()}else if(coverageLine){map.removeLayer(coverageLine);coverageLine=null}}catch(err){console.warn('Coverage outline unavailable',err)}}
+
+const densityLayer=L.layerGroup(),densityRenderer=L.canvas({padding:.2});let densitySequence=0,densityController=null,densityTimer=null;
+const densityToggle=document.getElementById('density-toggle'),densityState=document.getElementById('density-state');
+const bandInputs=[...document.querySelectorAll('.density-band')];
+function densitySelection(){const selected=bandInputs.filter(x=>x.checked).map(x=>x.value);return selected.includes('all')?'all':selected.join(',')||'none'}
+for(const input of bandInputs)input.addEventListener('change',()=>{if(input.checked){for(const other of bandInputs){if(input.value==='all'||other.value==='all')if(other!==input)other.checked=false}}markDensityChanged()});
+const envelopeLayers=L.layerGroup().addTo(map);let envelopeData=null;
+const envelopeColors={all:'#33d6dc',low:'#59d86b',middle:'#ffaa33',high:'#ca8cff'};
+function renderEnvelopes(){envelopeLayers.clearLayers();if(!envelopeData||!coverageOutlineEnabled)return;for(const input of document.querySelectorAll('.envelope-band')){if(!input.checked)continue;const product=envelopeData.products[input.value];const segments=product.envelope_segments.map(run=>run.map(p=>[p[1],p[0]]));if(segments.length)L.polyline(segments,{color:envelopeColors[input.value],weight:3,opacity:.8,dashArray:'6 4',interactive:false}).addTo(envelopeLayers)}}
+for(const input of document.querySelectorAll('.envelope-band'))input.addEventListener('change',renderEnvelopes);
+document.getElementById('envelope-generate').addEventListener('click',async()=>{const out=document.getElementById('envelope-state'),button=document.getElementById('envelope-generate');button.disabled=true;out.textContent='Generating comparison…';try{const r=await fetch('traffic-density/envelopes',{cache:'no-store'}),data=await r.json();if(!r.ok)throw new Error(data.error||'Generation failed');envelopeData=data;renderEnvelopes();out.textContent=(data.cached?'Cached':'Generated')+' '+data.generated_at+' · '+data.window.start+' – '+data.window.end+' · '+Object.entries(data.products).map(([band,p])=>band+': '+p.populated_bins+'/720').join(' · ')}catch(e){out.textContent=e.message}finally{button.disabled=false}});
+let densityInFlight=false,densityViewRevision=0;
+async function refreshDensity(periodic=false){
+  if(periodic&&densityInFlight)return;
+  const viewRevision=densityViewRevision;
+  const sequence=++densitySequence;if(densityController)densityController.abort();
+  document.getElementById('density-options').hidden=!densityToggle.checked;
+  document.getElementById('density-refresh').hidden=!densityToggle.checked;
+  if(!densityToggle.checked){densityLayer.clearLayers();densityState.textContent='';return}
+  const selection=densitySelection();if(selection==='none'){densityLayer.clearLayers();densityState.textContent='Select altitude bands';return}
+  densityController=new AbortController();densityInFlight=true;densityState.textContent='Loading…';
+  const requestController=densityController,started=performance.now();
+  const timeout=setTimeout(()=>requestController.abort('timeout'),120000);
+  try{const b=map.getBounds(),west=Math.max(-180,b.getWest()),east=Math.min(180,b.getEast()),south=Math.max(-90,b.getSouth()),north=Math.min(90,b.getNorth());
+    const z=Math.max(0,Math.min(17,Math.floor(map.getZoom())+3));let query='max_cells=6000&zoom='+z+'&bands='+encodeURIComponent(selection);
+    if(west<=east)query+='&bbox='+[west,south,east,north].join(',');
+    const r=await fetch('traffic-density.geojson?'+query,{cache:'no-store',signal:densityController.signal});
+    const data=await r.json();if(!r.ok)throw new Error(data.error||'Density unavailable');if(sequence!==densitySequence||!densityToggle.checked)return;
+    densityLayer.clearLayers();const maximum=data.features.reduce((maximum,f)=>Math.max(maximum,f.properties.selected_observation_count),1);
+    L.geoJSON(data,{style:f=>{const t=Math.log1p(f.properties.selected_observation_count)/Math.log1p(maximum);return{renderer:densityRenderer,stroke:false,fillOpacity:.2+.5*t,fillColor:'hsl('+Math.round(240*(1-t))+',90%,50%)'}},onEachFeature:(f,l)=>{const p=f.properties,a=p.altitude;l.bindPopup('<b>Traffic Density</b><br>'+esc(p.cell_id)+'<br>'+Number(p.selected_observation_count).toLocaleString()+' selected observations ('+Number(p.observation_count).toLocaleString()+' all-band) · '+Number(p.passage_count).toLocaleString()+(data.window.display_zoom<17?' all-band base-cell passages<br>Low: ':' all-band passages<br>Low: ')+a.below_1200_ft+' · Middle: '+a['1200_to_17999_ft']+'<br>High: '+a['18000_ft_and_above']+' · Unknown: '+a.unknown+'<br>'+esc(data.window.start)+' – '+esc(data.window.end)+' (UTC)<br>'+(p.history_complete?'History start known':'History start uncertain'))}}).addTo(densityLayer);
+    densityState.textContent='30 days · '+(selection==='all'?'All Traffic':selection.replaceAll(',', ' + '))+' · '+data.features.length.toLocaleString()+' cells · grid z'+data.window.display_zoom+' · '+((performance.now()-started)/1000).toFixed(1)+'s · blue → red'+(viewRevision!==densityViewRevision?' · Changed — refresh density':'');
+  }catch(e){if(sequence===densitySequence){densityState.textContent=requestController.signal.reason==='timeout'?'Density request timed out after 120s':('Unavailable: '+e.message);console.warn('Traffic density',e)}}finally{clearTimeout(timeout);if(sequence===densitySequence)densityInFlight=false}
+}
+densityToggle.addEventListener('change',()=>{if(densityToggle.checked)densityLayer.addTo(map);else map.removeLayer(densityLayer);refreshDensity()});
+function markDensityChanged(){densityViewRevision++;if(densityToggle.checked)densityState.textContent='Changed — refresh density';}
+map.on('moveend zoomend',markDensityChanged);
+document.getElementById('density-refresh').addEventListener('click',()=>refreshDensity());
+
+async function refreshCoverage(){if(!coverageOutlineEnabled||!rangeToggle.checked)return;try{const r=await fetch('range-coverage',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),bins=Array.isArray(c.bins)?c.bins:[];const ranges=bins.map(x=>Number(x.distance_nm)).filter(Number.isFinite);maxObservedRange=ranges.length?Math.max(...ranges):null;const segs=(Array.isArray(c.envelope_segments)?c.envelope_segments:[]).map(run=>run.map(p=>[p[1],p[0]]));if(!rangeToggle.checked)return;if(segs.length){if(!coverageLine)coverageLine=L.polyline(segs,{color:'#ff1c1c',weight:2,opacity:.85,interactive:false,noClip:true}).addTo(map);else coverageLine.setLatLngs(segs);coverageLine.redraw()}else if(coverageLine){map.removeLayer(coverageLine);coverageLine=null}}catch(err){console.warn('Coverage outline unavailable',err)}}
 function clearTrack(){if(trackLine){map.removeLayer(trackLine);trackLine=null}trackStatus.textContent=''}
 async function showTrack(){const hex=document.getElementById('trackhex').value.trim().toLowerCase();const queryType=document.getElementById('trackhex').dataset.query||'hex';if(!(queryType==='callsign'?/^[a-z0-9]{1,16}$/:/^[0-9a-f]{6}$/).test(hex)){trackStatus.textContent=queryType==='callsign'?'Flight callsign required':'6-digit hex required';return}trackStatus.textContent='Loading…';try{const r=await fetch(`track-history?${queryType}=${encodeURIComponent(hex)}`,{cache:'no-store'});const d=await r.json();if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);const fields=Array.isArray(d.trail_fields)?d.trail_fields:[],ilat=fields.indexOf('lat'),ilon=fields.indexOf('lon'),pts=(Array.isArray(d.trail)?d.trail:[]).map(row=>[Number(row[ilat]),Number(row[ilon])]).filter(p=>Number.isFinite(p[0])&&Number.isFinite(p[1]));clearTrack();if(pts.length<1){trackStatus.textContent='No positions';return}trackLine=L.polyline(pts,{weight:4,opacity:.75,interactive:false}).addTo(map);trackStatus.textContent=`${(d.callsign||d.query||hex).toUpperCase()} · ${pts.length} positions`;trackLine.bringToFront();stabilizeMap()}catch(err){trackStatus.textContent=err.message}}
 document.getElementById('trackshow').addEventListener('click',showTrack);document.getElementById('trackclear').addEventListener('click',clearTrack);document.getElementById('trackhex').addEventListener('keydown',e=>{if(e.key==='Enter')showTrack()});
@@ -1379,18 +1463,98 @@ async function refresh(){try{const [ar,sr,er]=await Promise.all([fetch('data/air
 '''
 
 class Handler(BaseHTTPRequestHandler):
+    def _operation(self, method):
+        path, _, raw_query = self.path.partition('?')
+        query = parse_qs(raw_query)
+        datasets = {'/traffic-density/import': 'traffic-density', '/range-coverage/import': 'range-coverage',
+                    '/data/clear': 'collected-data', '/traffic-density/export': 'traffic-density',
+                    '/traffic-density.geojson': 'traffic-density', '/range-coverage': 'range-coverage',
+                    '/range-coverage.geojson': 'range-coverage', '/range-coverage-baseline': 'range-baseline',
+                    '/traffic-density/envelopes': 'density-envelopes', '/traffic-density/envelopes.geojson': 'density-envelopes'}
+        if path not in datasets:
+            return None
+        if method == 'POST':
+            if path not in ('/traffic-density/import','/range-coverage/import','/data/clear'):
+                return None
+            action = 'clear' if path == '/data/clear' else 'import'
+        else:
+            if path.endswith('/import') or path == '/data/clear':
+                return None
+            if path == '/range-coverage' and query.get('download') != ['1']:
+                return None  # The live map polls this endpoint every five seconds.
+            if path == '/traffic-density.geojson' and ('bbox' in query or 'max_cells' in query):
+                return None  # Interactive heat-map queries have their own timing logs.
+            action = 'generate' if path == '/traffic-density/envelopes' and query.get('download') != ['1'] else 'export'
+        return {'action':action, 'dataset':datasets[path], 'source':CFG['source']}
+
+    def _run_operation(self, method, handler):
+        self.operation_details = self._operation(method)
+        self.operation_status = None
+        started = time.monotonic()
+        failure = None
+        if self.operation_details:
+            print('[INFO] Data operation ' + json.dumps({**self.operation_details, 'phase':'started', 'timestamp':iso_utc(time.time())}), flush=True)
+        try:
+            handler()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            failure = type(exc).__name__
+        except Exception as exc:
+            failure = type(exc).__name__
+            raise
+        finally:
+            if self.operation_details:
+                status = self.operation_status
+                result = 'aborted' if failure in ('BrokenPipeError','ConnectionResetError') else ('failed' if failure or status is None or status >= 400 else 'completed')
+                record = {**self.operation_details, 'phase':result, 'timestamp':iso_utc(time.time()),
+                          'seconds':round(time.monotonic()-started,3), 'http_status':status}
+                if failure: record['error_type'] = failure
+                print(('[INFO]' if result=='completed' else '[WARN]')+' Data operation '+json.dumps(record), flush=True)
+            self.operation_details = None
+
+    def do_POST(self):
+        self._run_operation('POST', self._do_POST)
+
+    def do_GET(self):
+        self._run_operation('GET', self._do_GET)
+
+    def send_response(self, code, message=None):
+        self.operation_status = code
+        super().send_response(code, message)
+
     def log_message(self, fmt, *args):
         return
 
-    def send_json(self, payload, code=200):
+    def send_json(self, payload, code=200, filename=None):
         body = json.dumps(payload, indent=2).encode("utf-8")
+        details = getattr(self, 'operation_details', None)
+        if details and isinstance(payload, dict):
+            for key in ('added','replaced','retained','received','ignored_months','populated_bins','total_bins','pending'):
+                value = payload.get(key)
+                if isinstance(value, int): details[key] = value
+            if isinstance(payload.get('features'), list): details['features'] = len(payload['features'])
+            if isinstance(payload.get('cleared'), list): details['cleared'] = payload['cleared']
+            details['response_bytes'] = len(body)
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_file(self, path, filename, content_type="application/json"):
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.end_headers()
+        details = getattr(self, 'operation_details', None)
+        if details: details['response_bytes'] = path.stat().st_size
+        with path.open("rb") as file:
+            shutil.copyfileobj(file, self.wfile, length=65536)
 
     def send_html(self, html):
         body = html.encode("utf-8")
@@ -1416,8 +1580,68 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self):
+    def _do_POST(self):
         path, _, _query_string = self.path.partition("?")
+        if path.startswith("/settings/"):
+            settings_post(self, path)
+            return
+        if path == "/data/clear":
+            try:
+                if self.headers.get('Content-Type','').split(';')[0].strip() != 'application/json':
+                    raise ValueError('clear requires application/json')
+                length = int(self.headers.get('Content-Length','0'))
+                if not 0 < length <= 1024:
+                    raise ValueError('invalid clear request')
+                request = json.loads(self.rfile.read(length))
+                target = request.get('target')
+                if target in ('density','range','all'): self.operation_details['target'] = target
+                expected = 'CLEAR ALL' if target=='all' else 'CLEAR'
+                if target not in ('density','range','all') or request.get('confirmation') != expected:
+                    raise ValueError('explicit confirmation required')
+                if density_store is None and target in ('density','all'):
+                    raise ValueError('density storage unavailable; resolve its startup error first')
+                cleared=[]
+                if target in ('density','all'):
+                    density_store.clear(); cleared.append('current source traffic density')
+                if target=='all':
+                    root = Path(os.environ.get('FR24_DENSITY_PATH','/data/traffic-density'))
+                    # Only known source directories, never configuration or arbitrary paths.
+                    for source in VALID_SOURCES:
+                        folder=root/source
+                        if folder.exists() and folder.resolve()!=density_store.directory.resolve():
+                            with_store=DensityStore(folder,source_type=source)
+                            try: with_store.clear()
+                            finally: with_store.close()
+                    cleared.append('other source traffic density')
+                if target in ('range','all'):
+                    clear_coverage(); cleared.append('range coverage and legacy baseline')
+                self.send_json({'ok':True,'cleared':cleared})
+            except (ValueError,TypeError) as exc:
+                self.send_json({'error':str(exc)},400)
+            except Exception as exc:
+                print(f'[WARN] Clear data failed: {exc}',flush=True)
+                self.send_json({'error':'Clear failed; inspect App logs before retrying.'},500)
+            return
+        if path == "/traffic-density/import":
+            if density_store is None:
+                self.send_json({"error": "traffic density unavailable"}, 503)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                self.operation_details["input_bytes"] = max(0,length)
+                if length <= 0:
+                    raise ValueError("density import requires Content-Length")
+                legacy_source = parse_qs(_query_string).get("legacy_source", [None])[0]
+                self.send_json({"ok": True, **restore_stream(density_store, self.rfile, length, legacy_source)})
+            except (UnicodeDecodeError, ValueError, TypeError, KeyError, OverflowError) as exc:
+                self.send_json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:
+                print(f"[WARN] Density restore failed: {exc}", flush=True)
+                self.send_json({"ok": False, "error": "Restore failed; monthly chunks commit independently. Re-export and inspect before retrying."}, 500)
+            return
+        if path == "/range-coverage/import" and CFG["source"] == "swim_tfms":
+            self.send_json({"error": "Range coverage is disabled for FAA TFMS"}, 404)
+            return
         if path != "/range-coverage/import":
             self.send_json({"error": "not found", "path": path}, 404)
             return
@@ -1425,11 +1649,14 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
+        self.operation_details["input_bytes"] = max(0,length)
         if length <= 0 or length > 2 * 1024 * 1024:
             self.send_json({"error": "coverage import must be a JSON body no larger than 2 MiB"}, 400)
             return
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if payload.get("source_type") not in (None, CFG["source"]):
+                raise ValueError("Backup source does not match the selected source")
             result = import_coverage_payload(payload)
             print(f"[INFO] Coverage import complete: {result['added']} added, {result['replaced']} replaced, {result['retained']} retained", flush=True)
             self.send_json({"ok": True, **result})
@@ -1439,11 +1666,65 @@ class Handler(BaseHTTPRequestHandler):
             print(f"[WARN] Coverage import failed: {exc}", flush=True)
             self.send_json({"ok": False, "error": "coverage import failed"}, 500)
 
-    def do_GET(self):
+    def _do_GET(self):
         global requests_served, tile_proxy_requests, tile_proxy_cache_hits
         with lock:
             requests_served += 1
         path, _, query_string = self.path.partition("?")
+        if path == "/settings":
+            self.send_html(settings_page())
+            return
+        if path in ("/traffic-density/envelopes", "/traffic-density/envelopes.geojson"):
+            if density_store is None:
+                self.send_json({"error": density_startup_error or "traffic density unavailable"},503)
+                return
+            try:
+                query = parse_qs(query_string)
+                payload = density_envelope_payload(query.get("start",[None])[0],query.get("end",[None])[0])
+                if path.endswith(".geojson"):
+                    self.send_json(density_envelope_geojson(payload),filename=export_name("density-envelopes","geojson"))
+                else:
+                    self.send_json(payload,filename=export_name("density-envelopes"))
+            except (ValueError,TypeError,KeyError,OverflowError) as exc:
+                self.send_json({"error":str(exc)},400)
+            except Exception as exc:
+                print(f"[WARN] Density envelope request failed: {exc}",flush=True)
+                self.send_json({"error":"density envelope generation failed"},500)
+            return
+        if path in ("/traffic-density", "/traffic-density.geojson", "/traffic-density/export", "/traffic-density/status"):
+            if density_store is None:
+                self.send_json({"available": False, "error": density_startup_error or "traffic density unavailable"}, 503)
+                return
+            try:
+                if path == "/traffic-density/export":
+                    month = parse_qs(query_string).get("month", [None])[0]
+                    with archive_file(density_store, month) as file:
+                        self.send_file(file, export_name("traffic-density" + ("-"+month if month else "")))
+                    return
+                elif path == "/traffic-density/status":
+                    payload = density_store.status()
+                else:
+                    query = parse_qs(query_string)
+                    options = {"start": query.get("start", [None])[0], "end": query.get("end", [None])[0],
+                               "zoom": int(query.get("zoom", [17])[0]), "bands": query.get("bands", ["all"])[0]}
+                    if "max_cells" in query:
+                        options["max_cells"] = int(query["max_cells"][0])
+                    if "bbox" in query:
+                        options["bbox"] = [float(v) for v in query["bbox"][0].split(",")]
+                    if path.endswith(".geojson") and "bbox" not in options and "max_cells" not in options:
+                        with geojson_file(density_store, **options) as file:
+                            self.send_file(file, export_name("traffic-density", "geojson"), "application/geo+json")
+                        return
+                    payload = density_store.geojson(**options) if path.endswith(".geojson") else density_store.query(**options)
+                self.send_json(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                raise
+            except (ValueError, TypeError, OverflowError) as exc:
+                self.send_json({"error": str(exc)}, 400)
+            except Exception as exc:
+                print(f"[WARN] Density request failed: {exc}", flush=True)
+                self.send_json({"error": "traffic density read failed"}, 500)
+            return
         tile_match = re.fullmatch(r"/tiles/(\d+)/(\d+)/(\d+)\.png", path)
         if path == "/tile-debug":
             self.send_json({"build": TILE_PROXY_BUILD, "requests": tile_proxy_requests, "cache_hits": tile_proxy_cache_hits, "upstream_fetches": tile_proxy_upstream_fetches, "blocked": tile_proxy_blocked, "last_error": tile_proxy_last_error, "last_referer": tile_proxy_last_referer})
@@ -1492,7 +1773,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             base_url = CFG["history_url"]
             try:
-                req = Request(f"{base_url}/flight?{query_key}={quote(identity)}", headers={"User-Agent": "FR24-dump1090-Bridge/0.5.4"})
+                req = Request(f"{base_url}/flight?{query_key}={quote(identity)}", headers={"User-Agent": "FR24-dump1090-Bridge/0.6.8"})
                 with urlopen(req, timeout=5) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                 self.send_json(payload)
@@ -1500,16 +1781,19 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"[WARN] Track history lookup failed: {exc}", flush=True)
                 self.send_json({"error": "track history unavailable"}, 502)
             return
+        if path.startswith("/range-coverage") and CFG["source"] == "swim_tfms":
+            self.send_json({"error": "Range coverage is disabled for FAA TFMS"}, 404)
+            return
         if path == "/range-coverage-baseline":
             with lock:
                 baseline = coverage_baseline
-            self.send_json(baseline if baseline is not None else {"error": "no 1-degree baseline available"}, 200 if baseline is not None else 404)
+            self.send_json({**baseline, "source_type": CFG["source"]} if baseline is not None else {"error": "no 1-degree baseline available"}, 200 if baseline is not None else 404, filename=export_name("range-coverage-1-degree-baseline") if baseline is not None else None)
             return
         if path == "/range-coverage":
-            self.send_json(coverage_payload())
+            self.send_json({**coverage_payload(), "source_type": CFG["source"]}, filename=export_name("range-coverage"))
             return
         if path == "/range-coverage.geojson":
-            self.send_json(coverage_geojson_payload())
+            self.send_json({**coverage_geojson_payload(), "source_type": CFG["source"]}, filename=export_name("range-coverage", "geojson"))
             return
         if path in ("/aircraft.json", "/data/aircraft.json"):
             with lock:
@@ -1523,16 +1807,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(snapshot_status())
             return
         if path == "/":
-            self.send_html(MAP_HTML)
+            page = MAP_HTML.replace("__SOURCE_TITLE__", escape(source_title()))
+            if CFG["source"] == "swim_tfms":
+                page = page.replace('id="envelope-control" class="analysis-controls"', 'id="envelope-control" class="analysis-controls" hidden')
+                page = page.replace('id="range-control" style="font-size:12px"', 'id="range-control" style="display:none;font-size:12px"')
+            self.send_html(page)
             return
         if path == "/status-page":
             s = snapshot_status()
             common = f"""<!doctype html><html><head><meta charset=\"utf-8\">
-<title>FR24 to dump1090</title><style>
+<title>{escape(source_title())}</title><style>
 body{{font-family:sans-serif;max-width:760px;margin:40px auto;padding:0 20px;background:#111;color:#eee}}
 table{{border-collapse:collapse;width:100%}}td{{padding:8px;border-bottom:1px solid #333}}td:first-child{{color:#aaa;width:45%}}
 a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file]{{max-width:100%}}#coverage-result{{color:#aaa}}.ok{{color:#6ddc79}}.starting{{color:#7db7ff}}.degraded{{color:#ffd166}}.unhealthy{{color:#ff6b6b}}
-</style></head><body><h1>FR24 &rarr; dump1090</h1>
+</style></head><body><h1>{escape(source_title())}</h1>
 <p>Feed status: <strong class=\"{s['feed_status']}\">{s['feed_status'].upper()}</strong></p><table>
 <tr><td>Coverage resolution</td><td>0.5° / 720 bins</td></tr>
 <tr><td>Build version</td><td>{s['build_version']}</td></tr>
@@ -1571,8 +1859,8 @@ a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file
 <tr><td>Aircraft with position</td><td>{s['aircraft_with_position']}</td></tr><tr><td>Aircraft without position</td><td>{s['aircraft_without_position']}</td></tr>
 <tr><td>ADSB Aircraft Tracker</td><td>{(lambda e: 'Detected / active' if e.get('tracker_state') == 'active' else ('Temporarily unavailable' if e.get('tracker_state') == 'unavailable' else 'Awaiting detection'))(refresh_tracker_enrichment())}</td></tr><tr><td>O/D airport</td><td>{CFG['destination_airport'] or 'Not configured'}</td></tr>
 <tr><td>HTTP requests served</td><td>{s['requests_served']}</td></tr><tr><td>Uptime</td><td>{s['uptime_seconds']} sec</td></tr></table>
-<h2>Navigation</h2><p><a href=\"./\">Raw ADS-B Map</a></p>
-<h2>Data &amp; API Endpoints</h2><p>
+<h2>Navigation</h2><p><a href="settings">Settings backup / recovery</a> · <a href=\"./\">Raw ADS-B Map</a></p>
+<section style="border:2px solid #398851;border-radius:6px;padding:1em;margin:1em 0"><h2>Data &amp; API Endpoints</h2><p>
 <a href=\"data/aircraft.json\">/data/aircraft.json</a> &mdash; normalized aircraft data<br>
 <a href=\"aircraft.json\">/aircraft.json</a> &mdash; compatibility aircraft data<br>
 <a href=\"status\">/status</a> &mdash; bridge and feed status<br>
@@ -1583,24 +1871,157 @@ a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file
 <a href=\"tracker-enrichment\">/tracker-enrichment</a> &mdash; ADSB Tracker enrichment<br>
 <a href=\"map-config\">/map-config</a> &mdash; map configuration
 </p>
-<h2>Range Coverage Backup / Restore</h2>
-<p><a href="range-coverage-baseline" download="range-coverage-1-degree-baseline.json"><button type="button">Export 1° baseline</button></a> <a href="range-coverage" download="range-coverage.json"><button type="button">Export coverage JSON</button></a> <a href="range-coverage.geojson" download="range-coverage.geojson"><button type="button">Export coverage GeoJSON</button></a></p>
+</section><section id="density-backup" style="border:2px solid #c5a02b;border-radius:6px;padding:1em;margin:1em 0"><h2>Traffic Density — {SOURCE_LABELS[CFG["source"]]}</h2>
+<p>Collected independently of this map. Recent view: 30 UTC calendar days. Monthly history: 18 months.</p>
+<p><label>Backup window: <select id="density-month"><option value="">All retained history</option></select></label> <a id="density-export" href="traffic-density/export" download="{export_name("traffic-density")}">Export density JSON</a> · <a href="traffic-density.geojson" download="{export_name("traffic-density","geojson")}">Export recent spatial cells (GeoJSON)</a> · <a href="traffic-density/status">Collection status</a></p>
+<p><input id="density-file" type="file" accept="application/json,.json"> <button id="density-import" type="button">Restore density JSON</button></p>
+<p><label><input id="density-legacy" type="checkbox"> This older, untagged backup belongs to {SOURCE_LABELS[CFG["source"]]}.</label></p>
+<p id="density-result">Restore selects whole cell/month snapshots; overlapping histories are never added.</p>
+<script>
+fetch('traffic-density/status').then(r=>r.json()).then(s=>{{const select=document.getElementById('density-month');for(const month of(s.months||[]).slice().reverse()){{const option=document.createElement('option');option.value=month;option.textContent=month;select.appendChild(option)}}select.addEventListener('change',()=>{{const link=document.getElementById('density-export');link.href='traffic-density/export'+(select.value?'?month='+encodeURIComponent(select.value):'');link.download='{SOURCE_PREFIXES[CFG['source']]}-traffic-density'+(select.value?'-'+select.value:'')+'.json'}})}}).catch(()=>{{}});
+document.getElementById('density-import').addEventListener('click',async()=>{{const f=document.getElementById('density-file').files[0],out=document.getElementById('density-result');if(!f){{out.textContent='Select a density JSON export first.';return}}try{{out.textContent='Restoring…';const r=await fetch('traffic-density/import'+(document.getElementById('density-legacy').checked?'?legacy_source={CFG["source"]}':''),{{method:'POST',headers:{{'Content-Type':'application/json'}},body:f}});const x=await r.json();if(!r.ok)throw new Error(x.error||'Restore failed');out.textContent=`Restore complete: ${{x.added}} added, ${{x.replaced}} replaced, ${{x.retained}} retained; ${{x.ignored_months}} expired/future months ignored.`}}catch(e){{out.textContent=e.message}}}});
+</script>
+</section><section id="density-envelope-backup" style="border:2px solid #c5a02b;border-radius:6px;padding:1em;margin:1em 0"><h2>Density-derived envelopes — consistency comparison</h2>
+<p>All four products use the same source, dates, Home position and 0.5° bearings. Cell-center ranges are approximate; these do not replace authoritative range coverage. FAA products describe reported traffic extent, not receiver coverage. Passage evidence is combined across altitude bands in qualifying cells.</p>
+<p><label>Start (UTC): <input id="envelope-start" type="date"></label> <label>End (UTC): <input id="envelope-end" type="date"></label> <button id="envelope-preview" type="button">Generate comparison</button></p>
+<p><a id="envelope-json" href="traffic-density/envelopes?download=1" download="{export_name("density-envelopes")}">Export envelopes JSON</a> · <a id="envelope-geojson" href="traffic-density/envelopes.geojson" download="{export_name("density-envelopes","geojson")}">Export envelopes GeoJSON</a></p>
+<p id="envelope-result">Generated on demand; cached for up to five minutes. Unknown altitude is included only in All Traffic.</p>
+<script>
+function envelopeQuery(){{const q=new URLSearchParams();for(const name of['start','end']){{const value=document.getElementById('envelope-'+name).value;if(value)q.set(name,value)}}return q.size?'?'+q.toString():''}}
+for(const name of['start','end'])document.getElementById('envelope-'+name).addEventListener('change',()=>{{const query=envelopeQuery();document.getElementById('envelope-json').href='traffic-density/envelopes'+(query?query+'&download=1':'?download=1');document.getElementById('envelope-geojson').href='traffic-density/envelopes.geojson'+query;document.getElementById('envelope-result').textContent='Dates changed; generate the comparison again.'}});
+document.getElementById('envelope-preview').addEventListener('click',async()=>{{const out=document.getElementById('envelope-result'),button=document.getElementById('envelope-preview');button.disabled=true;out.textContent='Generating…';try{{const r=await fetch('traffic-density/envelopes'+envelopeQuery(),{{cache:'no-store'}}),data=await r.json();if(!r.ok)throw new Error(data.error||'Generation failed');out.textContent=data.extent_kind+' · '+data.window.start+' – '+data.window.end+' (UTC) · '+Object.entries(data.products).map(([band,p])=>band+': '+p.populated_bins+'/720 sectors').join(' · ')+' · '+(data.cached?'cached':'generated')+' '+data.generated_at}}catch(e){{out.textContent=e.message}}finally{{button.disabled=false}}}});
+</script></section>
+<section id="range-backup" style="border:2px solid #c5a02b;border-radius:6px;padding:1em;margin:1em 0"><h2>Range Coverage Backup / Restore</h2>
+<p><a href="range-coverage-baseline?download=1" download="{export_name("range-coverage-1-degree-baseline")}"><button type="button">Export 1° baseline</button></a> <a href="range-coverage?download=1" download="{export_name("range-coverage")}"><button type="button">Export coverage JSON</button></a> <a href="range-coverage.geojson" download="{export_name("range-coverage","geojson")}"><button type="button">Export coverage GeoJSON</button></a></p>
 <p><input id="coverage-file" type="file" accept="application/json,.json"> <button id="coverage-import" type="button">Import / merge coverage</button></p>
 <p id="coverage-result"><small>Import merges by bearing and keeps the farther range, so restoring an older backup will not overwrite a newer maximum.</small></p>
 <script>
 document.getElementById('coverage-import').addEventListener('click',async()=>{{const f=document.getElementById('coverage-file').files[0],out=document.getElementById('coverage-result');if(!f){{out.textContent='Select a coverage JSON file first.';return}}try{{const text=await f.text();JSON.parse(text);out.textContent='Importing...';const r=await fetch('range-coverage/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:text}});const x=await r.json();if(!r.ok||!x.ok)throw new Error(x.error||`HTTP ${{r.status}}`);out.textContent=`Import complete: ${{x.added}} added, ${{x.replaced}} replaced, ${{x.retained}} retained; ${{x.populated_bins}}/${{x.total_bins}} bins populated; ${{x.pending}} legacy positions pending Home.`}}catch(e){{out.textContent='Import failed: '+e.message}}}});
 </script>
+</section>
 <h2>Diagnostics</h2><p><a href="tile-debug">/tile-debug</a> &mdash; map tile proxy diagnostics</p>
 <p><small>Map tiles are served internally through <code>/tiles/{{z}}/{{x}}/{{y}}.png</code>.</small></p>
+<section style="border:2px solid #b33;border-radius:6px;padding:1em;margin:1em 0"><h2>Danger Zone</h2>
+<p>Deletion is permanent. Export backups first. Configuration and credentials are preserved; collection starts fresh.</p>
+<button class="clear-data" data-target="density">Clear current-source traffic density</button>
+<button class="clear-data" data-target="range">Clear range coverage and legacy baseline</button>
+<button class="clear-data" data-target="all">Clear all collected data (all sources)</button><p id="clear-result"></p>
+<script>
+for(const button of document.querySelectorAll('.clear-data'))button.addEventListener('click',async()=>{{
+ const target=button.dataset.target,required=target==='all'?'CLEAR ALL':'CLEAR';
+ const answer=prompt(button.textContent+'? This permanently deletes stored observations. Type '+required+' to confirm.');
+ if(answer!==required)return;
+ const out=document.getElementById('clear-result');button.disabled=true;out.textContent='Clearing…';
+ try{{const r=await fetch('data/clear',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{target,confirmation:answer}})}});const data=await r.json();if(!r.ok)throw new Error(data.error);out.textContent='Cleared: '+data.cleared.join(', ');}}catch(e){{out.textContent=e.message;}}finally{{button.disabled=false;}}
+}});
+</script></section>
 </body></html>"""
+            if CFG["source"] == "swim_tfms":
+                html = re.sub(r'<section id="range-backup" style="border:2px solid #c5a02b;border-radius:6px;padding:1em;margin:1em 0">.*?</section>', "<p>Range ring collection and backups are disabled for FAA TFMS.</p>", html, flags=re.S)
+                html = re.sub(r'<a href=\"range-coverage.*?<br>', "", html)
+                html = re.sub(r'<code>/range-coverage/import</code>.*?<br>', "", html)
+                html = html.replace("0.5° / 720 bins", "Disabled for FAA TFMS")
+            if density_startup_error:
+                html = html.replace("<h2>Traffic Density", "<p class=\"unhealthy\">"+escape(density_startup_error)+"</p><h2>Traffic Density")
             self.send_html(html)
             return
         self.send_json({"error": "not found", "path": path}, 404)
 
 
+def open_density_store():
+    root = Path(os.environ.get("FR24_DENSITY_PATH", "/data/traffic-density"))
+    root.mkdir(parents=True, exist_ok=True)
+    marker = root / 'migration.json'
+    legacy = sorted(root.glob('????-??.dat'))
+    if legacy or marker.exists():
+        attribution = CFG.get('density_legacy_source', 'unassigned')
+        if marker.exists():
+            migration = json.loads(marker.read_text())
+            attribution = migration['source']
+        else:
+            if attribution not in VALID_SOURCES:
+                raise ValueError("Existing density history is preserved but has no source identity. Set density_legacy_source to its original source in App Configuration and restart; collection is paused until attribution.")
+            migration = {'source':attribution, 'months':[p.name for p in legacy]}
+            if (root/attribution).exists():
+                raise ValueError('Legacy migration target already exists; export both histories before restoring explicitly.')
+            temporary = marker.with_suffix('.tmp')
+            temporary.write_text(json.dumps(migration))
+            os.replace(temporary,marker)
+        if attribution not in VALID_SOURCES or any(not re.fullmatch(r'\d{4}-\d{2}\.dat', name) for name in migration['months']):
+            raise ValueError('invalid legacy migration marker')
+        identity = json.loads((root/'identity.json').read_text())
+        if identity.get('base_zoom') != 17 or identity.get('scheme') != 'geographic-quadtree' or not identity.get('provenance'):
+            raise ValueError('invalid legacy density identity')
+        target = root/attribution
+        target.mkdir(exist_ok=True)
+        for name in migration['months']:
+            original, destination = root/name, target/name
+            if original.exists():
+                if destination.exists():
+                    raise ValueError('Legacy migration collision; history preserved for manual review')
+                # Opening and closing recovers a hot journal and checkpoints WAL
+                # before moving the main SQLite file after an interrupted stop.
+                db = sqlite3.connect(original)
+                try:
+                    if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                        raise ValueError("corrupt legacy density chunk")
+                finally:
+                    db.close()
+                os.replace(original,destination)
+            elif not destination.exists():
+                raise ValueError('Legacy migration chunk missing')
+        identity['source_type'] = attribution
+        temporary = target/'identity.tmp'
+        temporary.write_text(json.dumps(identity))
+        os.replace(temporary,target/'identity.json')
+        marker.unlink()
+    return DensityStore(root/CFG['source'], source_type=CFG['source'])
+
+
+def density_envelope_payload(start=None,end=None):
+    store = density_store
+    if store is None:
+        raise ValueError('traffic density unavailable')
+    with lock:
+        home = dict(home_marker) if home_marker else None
+    with store.lock:
+        if not hasattr(store,'envelope_service'):
+            store.envelope_service = EnvelopeCache(store)
+        service = store.envelope_service
+    payload = service.get(home,start,end)
+    for product in payload['products'].values():
+        product['envelope_segments'] = coverage_envelope_segments(product['bins'],payload['home'])
+    return payload
+
+
+def density_envelope_geojson(payload):
+    features=[]
+    for band,product in payload['products'].items():
+        for segment in product['envelope_segments']:
+            if len(segment)>=2:
+                features.append({'type':'Feature','geometry':{'type':'LineString','coordinates':segment},
+                    'properties':{'band':band,'derived':True,'position_method':'base_cell_center'}})
+        for item in product['bins']:
+            features.append({'type':'Feature','geometry':{'type':'Point','coordinates':item['cell_center']},
+                'properties':{'band':band,**{k:v for k,v in item.items() if k!='cell_center'}}})
+    return {'type':'FeatureCollection','metadata':{k:v for k,v in payload.items() if k!='products'},'features':features}
+
+
 def main():
+    global density_store, density_startup_error
+    try:
+        density_store = open_density_store()
+        atexit.register(density_store.close)
+    except Exception as exc:
+        density_startup_error = str(exc)
+        print(f"[WARN] Traffic density paused to protect existing history: {exc}", flush=True)
+    signal.signal(signal.SIGTERM, lambda *_args: sys.exit(0))
+    threading.Thread(target=density_maintenance, daemon=True).start()
     threading.Thread(target=home_marker_updater, daemon=True).start()
-    threading.Thread(target=coverage_updater, daemon=True).start()
+    if CFG["source"] != "swim_tfms":
+        threading.Thread(target=coverage_updater, daemon=True).start()
+    else:
+        print("[INFO] Range coverage processing disabled for TFMS input", flush=True)
     if CFG["source"] == "sbs_30003":
         print(f"Input source: SBS/BaseStation TCP {CFG['receiver_host']}:{CFG['sbs_port']}", flush=True)
         print(f"Snapshot interval: {SBS_SNAPSHOT_INTERVAL} second", flush=True)

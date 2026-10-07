@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.6.8
+
+- Log data import/export/generation/clear starts and outcomes with source, dataset, available counts, bytes, duration and HTTP status. Distinguish rejection and disconnected transfer outcomes; keep automatic range polling out of export logs.
+- Document refreshing displayed layers after restore/clear and restarting after Network port changes. Settings, storage and collection behavior are unchanged.
+
+## 0.6.7
+
+- Persist valid App settings in the dedicated host configuration folder; offer explicit Supervisor restore and a recovery page when feed settings are incomplete. Preserve damaged snapshots and include credentials without exposing them in the UI.
+- Place density altitude and envelope controls side by side; move Refresh density beside Fit aircraft and rename the comparison action Generate envelopes. Keep Range ring on the main toolbar.
+- Border endpoints green and the three data sections yellow; move the red Danger Zone below all Diagnostics text.
+
+## 0.6.6
+
+- Index spatial cells and filter viewport before aggregation; preserve zoom-17 collection and 0.5° range bins.
+- Load density on enable and explicit Refresh density; pan/zoom/band changes mark the view pending. Show actual grid zoom and reuse small interactive aggregates for up to 30 seconds.
+- Document direct LAN access for large restores outside Ingress.
+- Add defaults for all optional fields, including SWIM message VPN; retain source-specific startup validation.
+- Add confirmed selective and all-source collected-data clearing below Diagnostics.
+
+## 0.6.5
+
+- Let interactive density requests finish without cancellation by the refresh timer.
+- Aggregate requested display cells in SQLite, use zoom-appropriate geometry, and cap interactive responses at 6,000 cells by merging observed children. Fine-resolution storage and full-resolution exports remain intact.
+- Report query timing, lock wait, returned cells and display zoom through logs and collection status; show timeout and request errors in the map.
+
+## 0.6.4
+
+- Rename the static Home Assistant sidebar title to Aircraft Bridge; retain source-specific map and page titles.
+- Add Low/Middle/High combination filters and All Traffic including Unknown; color by selected observation counts without changing storage or full backups.
+- Add on-demand density-derived All/Low/Middle/High envelopes at 0.5° / 720 bins using observed base-cell centers. Show dashed ADS-B comparison outlines separately from authoritative range coverage.
+- Add custom-window envelope JSON/GeoJSON exports and a bounded five-minute cache. FAA products are labeled reported traffic extent and are excluded from receiver range-ring display.
+- Include sector observation counts, occupied cells, maximum-cell support and explicitly labeled combined passages in qualifying cells; do not invent altitude-specific passages.
+- Document TFMS sampling, repeated snapshot counts, observed delivery timing and the rationale for avoiding interpolation.
+- Preserve the existing schema, source separation, retention, backup policy and v0.6.3 large-archive handling.
+
+## 0.6.3
+
+- Use selected-source browser, map and status titles; change the static default Home Assistant sidebar title to Bridge. Document per-installation sidebar labels.
+- Separate density history by source, retain all-source collection, tag JSON backups and reject mismatched-source restores. Preserve legacy chunks with explicit one-time source attribution.
+- Prefix JSON/GeoJSON backup filenames with sbs-, fr24-, d1090- or faa-. Keep density controls scoped to the current source.
+- Add a Range ring checkbox for ADS-B sources; hiding it does not stop collection. Disable range routes and controls for FAA TFMS as well as its existing worker exclusion.
+- Replace full-memory density backup/restore with disk snapshots, compact streaming exports and fully validated disk-staged imports; remove the 256 MiB upload ceiling.
+- Retain zoom-17 storage, daily altitude/passage counts, 18-month retention, snapshot collision policy and the v0.6.2 responsive layout.
+- Include upgrade and test instructions in docs/v0.6.3-testing.md.
+
+## 0.6.2
+
+- Place track controls and status in a shared wrapping dock so the panels cannot overlap.
+- Make Bridge status collapsible, initially closed on narrow or short viewports; constrain and scroll its contents to the available space below the toolbar.
+- Keep the top toolbar clear of Leaflet zoom buttons; recalculate available panel height on resize, orientation changes and dynamic feed/control updates.
+- Prevent clicks and scrolling in overlays from propagating to the map. Retain v0.6.1 TFMS range-worker exclusion and all density behavior.
+- Include an optional Playwright layout regression harness for phone/desktop viewports, status expansion, track visibility, rotation and keyboard toggling. Browser execution was unavailable in this build environment.
+
+## 0.6.1
+
+- Do not start the range-coverage worker with TFMS input; skip coverage file loading, legacy migration, periodic processing and flushing.
+- Guard the worker itself against TFMS invocation. Preserve existing coverage files for a later switch back to an ADS-B source.
+- Continue Home-marker processing (needed by the TFMS geographic gate) and Traffic Density collection for TFMS. ADS-B coverage remains 0.5° / 720 bins.
+
+## 0.6.0
+
+- Collect traffic density once per publication from all four selected sources, independently of map visibility and raw message counts.
+- Add a sparse global geographic quadtree at base level 17 (approximately 153 × 227 m at 42°N), with parent aggregation for display and no interpolated cell credit.
+- Persist daily observation/passage counts, all four altitude counters, min/max altitude and explicit history provenance in monthly SQLite `.dat` chunks; retain 18 calendar months.
+- Suppress repeated passages from cell-boundary jitter and short dropouts using a 90-second recent-cell cache.
+- Add an off-by-default Traffic Density map layer for the most recent 30 UTC calendar dates, with combined observation colors and cell-statistics popups.
+- Add JSON export/restore, monthly backup selection, GeoJSON polygons, query-window/hierarchy APIs and collection status. Restore chooses deterministic whole cell/month snapshots rather than adding overlapping histories; uncertain starts remain null.
+- Include reproducible candidate-grid sizing and regression/HTTP/publisher tests; package the new module in Docker and AppArmor.
+- Preserve the existing authoritative 0.5° / 720-bin range dataset and legacy migration behavior.
+
 ## 0.5.4
 
 - Report build version in `/status`, the human-readable feed status page, and the map bridge status panel.
