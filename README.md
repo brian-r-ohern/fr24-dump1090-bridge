@@ -9,6 +9,12 @@ If you're looking for a lightweight way to visualize and expose local aircraft d
 
 The recommended/default input is a receiver's SBS/BaseStation TCP feed on port 30003. An authenticated FR24 /flights.js feed or an existing dump1090/readsb aircraft.json feed can be selected as mutually exclusive alternatives. An FR24 receiver is therefore not required when a compatible aircraft.json source is already available. Lastly, if you have an FAA SWIM / SWIFT Portal account and a TFMS feed set up, you can use that.
 
+## New in v0.6.8:
+- Persistent traffic density with Low, Middle, High, and All Traffic views.
+- Density-derived range envelopes for comparison.
+- Settings recovery, data backup/restore, selective clearing, and operation logging.
+- Compact map controls with manual density refresh.
+  
 ## Home Assistant installation
 
 1. In Home Assistant, open **Settings → Apps → Install app**.
@@ -82,6 +88,12 @@ The bridge can read Home Assistant `zone.home` through the supported App/Core AP
 - `/tracker-enrichment` — optional ADSB Aircraft Tracker map enrichment
 - `/map-config` — map configuration used by the Raw ADS-B Map
 - `/tile-debug` — map tile proxy diagnostics
+- /settings — settings backup and recovery
+- /traffic-density/status — collection and query diagnostics
+- /traffic-density/export — density JSON backup
+- /traffic-density.geojson — spatial density export
+- /traffic-density/envelopes — density-derived range comparison
+- /traffic-density/envelopes.geojson — range-comparison GeoJSON export
 - `/tiles/{z}/{x}/{y}.png` — internal map-tile proxy route used by the map
 
 The service listens on container port `8085`. It is not exposed to the LAN by default. A host port can be assigned in the app's Network settings when an external client needs access.
@@ -147,7 +159,7 @@ The App runs under a Home Assistant AppArmor profile. The profile has been teste
 | Persistent App data/cache | `/data/**` | ✅ |
 | DNS resolution | IPv4/IPv6 datagram networking | ✅ |
 
-The App does not require raw sockets, host filesystem access, Docker access, `/config`, `/share`, `/media`, `/ssl`, `/backup`, `mount`, or `ptrace`.
+The App does not require raw sockets, host filesystem access, Docker access, `/share`, `/media`, `/ssl`, `/backup`, `mount`, or `ptrace`.  The app mounts its dedicated /config folder to retain settings snapshots for recovery after install.
 
 ## License
 
