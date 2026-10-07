@@ -26,8 +26,8 @@ The app currently supports `amd64` Home Assistant systems.
 ## Home Assistant App
 <img width="991" height="857" alt="image" src="https://github.com/user-attachments/assets/a7be378b-2772-4c62-9306-bcb95435872f" />
 
-## Raw ADS-B Map
-<img width="1024" height="567" alt="image" src="https://github.com/user-attachments/assets/2c5e1a80-7c00-4cbf-8e9d-05b3ad3869f6" />
+## Raw ADS-B Map with density and range ring
+<img width="1024" height="566" alt="image" src="https://github.com/user-attachments/assets/efe60542-bb0b-41df-a8bf-b38eb26aacf3" />
 
 ## Maximum observed range
 
@@ -68,7 +68,7 @@ Users with an authorized FAA SWIM subscription will need the connection details 
 The bridge can read Home Assistant `zone.home` through the supported App/Core API proxy and display it on the Raw ADS-B Map. Home coordinates are not included in `/status`, aircraft JSON, logs, or tile diagnostics. If the entity is unavailable, the map continues without the marker.
 
 ## Endpoints
-<img width="588" height="509" alt="image" src="https://github.com/user-attachments/assets/2ee5e12f-6e84-4fb2-87c3-10367df07840" />
+<img width="790" height="382" alt="image" src="https://github.com/user-attachments/assets/15bfde9b-ff48-4152-8510-3d5f071e7419" />
 
 - `/` — Raw ADS-B Map
 - `/aircraft.json` — dump1090/readsb-compatible aircraft feed
