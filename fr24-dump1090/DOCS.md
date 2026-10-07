@@ -2,11 +2,13 @@
 
 ## Configuration
 
-The bridge supports three mutually exclusive aircraft input sources. Exactly one source is selected at startup.
+The bridge supports four mutually exclusive aircraft input sources. Exactly one source is selected at startup.
 
 - **SBS/BaseStation (`sbs_30003`) — recommended/default for FR24 receivers.** Connects to the receiver's local TCP BaseStation feed, normally on port `30003`. Only the receiver host is required for this mode.
 - **FR24 web feed (`flights_js`) — alternate.** Polls the receiver's authenticated `/flights.js` endpoint. This mode requires the receiver HTTP port, username, and password.
 - **dump1090/readsb JSON (`aircraft_json`) — alternate.** Polls a configured HTTP or HTTPS `aircraft.json` URL. The bridge validates the standard top-level aircraft array, normalizes ICAO `hex` values, preserves supplied aircraft fields, and republishes the selected source through the bridge endpoints.
+
+- **FAA SWIM TFMS (`swim_tfms`) — alternate.** Uses an authorized FAA Solace subscription; requires broker host/port, message VPN, username, password and queue. Positioned tracks are gated around Home Assistant Home. See TFMS behavior below.
 
 Default operational values:
 
@@ -41,15 +43,24 @@ The last good snapshot remains available during temporary upstream failures. Sou
 
 ## Optional ADSB Aircraft Tracker map enrichment
 
-v0.5.0 can use the Home Assistant entities provided by **ADSB Aircraft Tracker** to enrich the Raw ADS-B Map. Tracker remains optional and is not an aircraft input source. The bridge matches Tracker information to currently mapped aircraft by ICAO `hex` only.
+The Bridge can use the Home Assistant entities provided by **ADSB Aircraft Tracker** to enrich the Raw ADS-B Map. Tracker remains optional and is not an aircraft input source. The bridge matches Tracker information to currently mapped aircraft by ICAO `hex` only.
 
 When Tracker data is available, military aircraft are shown in green and Tracker's current closest aircraft receives a red halo. An optional **Origin/destination airport highlight** setting accepts an IATA airport code and marks aircraft with **O** when Tracker `route_origin` matches or **D** when `route_destination` matches. Tracker metadata also enriches aircraft popups when available. These states can overlap on the same aircraft. The map uses reported track when available and derives course over ground from successive positions as a fallback for stale/missing orientation.
 
-Tracker enrichment is presentation-only. It does not modify `/aircraft.json` or `/data/aircraft.json`, does not merge aircraft sources, and does not duplicate Tracker's military or route logic. If Tracker is not installed, its entities are unavailable, or enrichment cannot be read, the map retains the v0.4.0 appearance and behavior.
+Tracker enrichment is presentation-only. It does not modify `/aircraft.json` or `/data/aircraft.json`, does not merge aircraft sources, and does not duplicate Tracker's military or route logic. If Tracker is not installed, its entities are unavailable, or enrichment cannot be read, the map continues with available source data.
+
+### TFMS airport matching and map display
+
+When using TFMS, enter the full four-letter airport identifier in `destination_airport`, matching the feed (for example, `KSYR` rather than `SYR`). For most airports in the contiguous United States, this means adding `K` to the three-letter code. Alaska and Hawaii use different prefixes; use the actual identifier rather than automatically adding `K`. Origin (O) and destination (D) badges compare this setting directly with TFMS departure and arrival airport codes, ignoring case.
+
+The observed coverage outline is hidden for TFMS because its boundary reflects the configured geographic filter rather than radio reception. Numeric track/course remains visible with a 16-point compass label, such as `274.4° (W)`; calculated course retains its `(course)` label.
+
+Track history is a developer-only tool shown only when `history_url` is configured. Contact the author for an API description. The configured base URL receives `/flight?callsign=...` for TFMS or `/flight?hex=...` for ADS-B.
+
 
 ## Home marker
 
-The bridge requests `zone.home` from Home Assistant through the supported Supervisor/Core API proxy enabled by `homeassistant_api: true`. When latitude and longitude are available, the Raw ADS-B Map displays a Home marker and the zone radius. The coordinates are used only by the map presentation path and are not added to `/status`, `/aircraft.json`, logs, or tile diagnostics. If `zone.home` cannot be read, aircraft mapping continues normally without a Home marker.
+The bridge requests `zone.home` from Home Assistant through the supported Supervisor/Core API proxy enabled by `homeassistant_api: true`. When latitude and longitude are available, the Raw ADS-B Map displays a Home marker and the zone radius. The coordinates also support ADS-B range calculations, density-envelope distances, and the TFMS geographic filter. They are not added to `/status`, `/aircraft.json`, logs, or tile diagnostics. If `zone.home` cannot be read, aircraft mapping continues normally without a Home marker.
 
 ## Internal Home Assistant access
 
@@ -61,7 +72,7 @@ Consumers can use `/aircraft.json` or `/data/aircraft.json` as required.
 
 ## Home Assistant web UI (Ingress)
 
-The app supports Home Assistant Ingress for the **Raw ADS-B Map**, which is the default web interface in v0.5.0. Use **Open Web UI** from the app Info page to open the map through Home Assistant without publishing port `8085` to the LAN.
+The app supports Home Assistant Ingress for the **Raw ADS-B Map**, which is the default web interface. Use **Open Web UI** from the app Info page to open the map through Home Assistant without publishing port `8085` to the LAN.
 
 If desired, enable **Show in sidebar** on the app Info page for direct access from the Home Assistant sidebar. The detailed human-readable status page is available from the map or at `/status-page`. Integrations such as ADSB Aircraft Tracker can continue to use the app's internal hostname and port `8085`.
 
@@ -71,7 +82,7 @@ The app declares container port 8085 with no host mapping by default. If a clien
 
 ## Status endpoints
 
-`/status` reports bridge uptime, selected input source, receiver/feed state, aircraft totals, and source-specific statistics. SBS mode reports message rate/count, last-message age, parse errors, and connection/reconnection counts. flights.js and aircraft.json modes report poll timing and success/failure counts. aircraft.json mode also reports upstream message count/rate when the source supplies a cumulative numeric `messages` value.
+`/status` reports the build version, coverage resolution, bridge uptime, selected input source, receiver/feed state, aircraft totals, and source-specific statistics. SBS mode reports message rate/count, last-message age, parse errors, and connection/reconnection counts. flights.js and aircraft.json modes report poll timing and success/failure counts. aircraft.json mode also reports upstream message count/rate when the source supplies a cumulative numeric `messages` value.
 
 `/health` intentionally reports process/service health rather than upstream FR24 receiver health.
 
@@ -89,6 +100,16 @@ The app declares container port 8085 with no host mapping by default. If a clien
 - `/tracker-enrichment` — optional ADSB Aircraft Tracker map enrichment
 - `/map-config` — map configuration used by the Raw ADS-B Map
 - `/tile-debug` — map tile proxy diagnostics
+- `/settings` — settings backup and recovery
+- `/traffic-density` — density cell statistics
+- `/traffic-density/status` — collection and query diagnostics
+- `/traffic-density/export` — density JSON backup (optional `?month=YYYY-MM`)
+- `POST /traffic-density/import` — validated density restore
+- `/traffic-density.geojson` — spatial density export
+- `/traffic-density/envelopes` — density-derived range comparison
+- `/traffic-density/envelopes.geojson` — range-comparison GeoJSON export
+- `/range-coverage-baseline` — preserved 1° baseline, when available
+- `POST /data/clear` — confirmed selective or all-source data clearing
 - `/tiles/{z}/{x}/{y}.png` — internal map-tile proxy route used by the map
 
 ## Mobile map behavior
@@ -124,7 +145,7 @@ array.
 
 If the Raw ADS-B Map contains aircraft but no Home marker, verify that
 `zone.home` exists in Home Assistant and contains valid latitude and longitude
-attributes. Failure to obtain `zone.home` does not affect aircraft processing.
+attributes. Without `zone.home`, ADS-B feeds and density collection continue, but Home-based range products are unavailable. TFMS needs Home for its geographic filter.
 
 If another Home Assistant integration cannot reach the bridge, verify the
 installed app's internal hostname and use port `8085`. The hostname assigned
@@ -142,7 +163,6 @@ The `/range-coverage` diagnostic endpoint includes convergence metadata: collect
 The status page provides **Export coverage JSON** and **Import / merge coverage** controls. Export saves the current `/range-coverage` payload before an uninstall/reinstall. Import posts that JSON to `/range-coverage/import`, validates either 1-degree legacy or 0.5-degree native bin data, and merges it with the current history by bearing. The farther `distance_nm` wins, so importing an older backup cannot replace a newer maximum. The merged result is flushed immediately to `/data/range-coverage.json`. **Export coverage GeoJSON** downloads `/range-coverage.geojson`, generated on demand from the same live table. It contains ordered empirical Point features and the exact stepped map envelope: open MultiLineString runs for incomplete data, or a Polygon only when all 720 bins are populated.
 
 
-
 ### Optional map enrichment
 
 Map enrichment can be selected with `enrichment_source`. The default `adsb_tracker` preserves existing behavior; set it to `none` to disable ADSB Aircraft Tracker enrichment without changing the selected aircraft data source.
@@ -153,45 +173,51 @@ Map enrichment can be selected with `enrichment_source`. The default `adsb_track
 The original 1° file is archived as `/data/range-coverage.json.1-degree-baseline.json` before migration and retained as `baseline_1_degree` in exported JSON. Use **Export 1° baseline** on the status page to download it. Legacy maxima seed two adjacent bins (12° → 12° and 12.5°), including on restart from a preserved baseline. Each copy is labeled `legacy_adjacent_seed`; it is not a separate observation. Seeding does not require Home. Imports retain the farther maximum and include source-resolution provenance. Previously discarded observations cannot be reconstructed. GeoJSON and the map use the same derived sector boundary; raw source positions retain provenance; duplicated legacy seed points are identified as `legacy_sector_seed` in GeoJSON.
 
 
-## Traffic Density — v0.6.0
+## Traffic Density
 
 The map's **Traffic Density** layer is off by default; collection runs for every selected-source publication whether the layer is enabled or not. Fine geographic quadtree cells are approximately 153 × 227 m at 42°N. Each occupied cell retains observation/passage counts, Low (<1,200 ft), Middle (1,200–17,999 ft), High (≥18,000 ft), Unknown, altitude min/max and daily timestamps. Only actual positioned observations contribute.
 
-Data is separate from 0.5° / 720-bin range coverage, in `/data/traffic-density/YYYY-MM.dat` SQLite chunks. Eighteen calendar months are retained. The default view covers today plus the preceding 29 UTC dates, reconstructed from daily counters across monthly boundaries; it is not an exact arbitrary-hour rolling window.
+Data is separate from 0.5° / 720-bin range coverage, in `/data/traffic-density/<source>/YYYY-MM.dat` SQLite chunks. Eighteen calendar months are retained. The default view covers today plus the preceding 29 UTC dates, reconstructed from daily counters across monthly boundaries; it is not an exact arbitrary-hour rolling window.
 
 Use the status page's density JSON export/import controls for backup and restore. Large histories should be exported/restored by month through its backup selector. Imports choose whole cell/month snapshots without adding overlapping counts and explicitly mark uncertain starts. Recent GeoJSON exports contain occupied cell polygons and statistics; GeoJSON cannot restore history. Back up both datasets before destructive App lifecycle operations.
 
 API: `/traffic-density`, `/traffic-density.geojson`, `/traffic-density/export`, `/traffic-density/export?month=YYYY-MM`, `/traffic-density/status`, and `POST /traffic-density/import`. Query `start`/`end` are inclusive UTC dates; `zoom` selects hierarchy level 0–17 and optional `bbox` limits the viewport. Parent passage counts sum base-cell passages, rather than deduplicating coarse-cell entries. Passage jitter/dropout suppression uses 90 seconds and resets on restart/restore.
 
-The repository's `docs/traffic-density-v0.6.0.md` documents sizing, schema, limits and validation. Selected altitude views and density-derived range envelopes remain follow-ons; all altitude counters are collected now.
+The [density schema and sizing notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/traffic-density-v0.6.0.md) document sizing, schema, limits and validation. Low/Middle/High selections and All Traffic are available, together with separate density-derived envelope comparisons.
 
 
-### TFMS range processing — v0.6.1
+### FAA SWIM/TFMS density limitations
+
+Traffic Density remains available for FAA SWIM/TFMS, but its spatial detail is limited by the position reports supplied by the feed. Report cadence varies by feed and track; observed examples updated approximately once per minute, leaving gaps between occupied cells even along a continuous flight. This is a sampling interval, not a measured minute of delivery latency: a three-image check of one track was consistent with delivery/display delay of only a few seconds, subject to clock and browser timing. These examples do not establish cadence or latency for every TFMS track. An empty cell therefore means no position was observed there; it does not establish that no aircraft passed through it. In the current implementation, observations count aircraft represented in Bridge publication snapshots, not distinct FAA reports: the Bridge republishes retained TFMS positions once per second, so the same reported position can receive multiple observation credits while it remains eligible. Counts consequently reflect both report availability and snapshot retention, and should not be compared directly with ADS-B feeds as independent position-report counts or interpreted as measured time spent in each cell.
+
+The Bridge deliberately does not interpolate between reports or extrapolate beyond the latest report to fill density gaps. Great-circle connections, three-point smoothing and constrained-turn paths can suggest plausible trajectories, but cannot establish which cells an aircraft actually traversed between sparse reports. Filling those cells would turn inferred motion into apparent observations and could introduce false routes or maneuver artifacts, especially during turns, holding patterns or report gaps. Density therefore credits only the reported-position cells represented in eligible snapshots. Any future inferred-track presentation should remain explicitly distinguishable from the observed density dataset.
+
+### TFMS range processing
 
 Selecting `swim_tfms` disables the range-coverage worker entirely, including coverage-file loading, migration and periodic flushing. Existing ADS-B coverage files are preserved for a later switch back to an ADS-B source. The coverage outline remains hidden for TFMS. Home-marker processing and Traffic Density collection continue; TFMS still needs Home for its geographic filter.
 
 
-### Responsive map controls — v0.6.2
+### Responsive map controls
 
-Bridge status is collapsible: tap/click its heading to open or close it. On narrow or short screens it starts closed. Its expanded contents scroll within the available space. Status and track controls share a wrapping bottom dock, while the top toolbar leaves room for the zoom buttons. Layout updates when the screen rotates or controls change. This also includes v0.6.1's TFMS range-processing exclusion.
-
-
-## v0.6.3 upgrade
-
-Source-specific page titles, density stores and backup names are now available. The Range ring checkbox controls ADS-B display; FAA TFMS continues density collection with range processing disabled. Existing untagged density needs explicit `density_legacy_source` attribution on upgrade. See [upgrade and testing notes](../docs/v0.6.3-testing.md) for large-backup behavior and static Home Assistant sidebar labels.
+Bridge status is collapsible: tap/click its heading to open or close it. On narrow or short screens it starts closed. Its expanded contents scroll within the available space. Status and track controls share a wrapping bottom dock, while the top toolbar leaves room for the zoom buttons. Layout updates when the screen rotates or controls change. 
 
 
-## v0.6.4
+## Source identity and legacy density upgrade
 
-The static sidebar title is Aircraft Bridge. Traffic Density supports Low/Middle/High combinations and All Traffic including Unknown. ADS-B maps offer on-demand dashed density envelopes for consistency comparison at 0.5°; the status page provides custom dates and JSON/GeoJSON exports. FAA exports describe reported traffic extent and do not enable receiver range rings. See [usage and verification notes](../docs/v0.6.4-testing.md). No stored-counter migration is needed from v0.6.3.
+Page titles, density stores and backup names identify the selected source. The Range ring checkbox controls ADS-B display; FAA TFMS continues density collection with range processing disabled. Existing untagged density needs explicit `density_legacy_source` attribution on upgrade. See [upgrade and testing notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.6.3-testing.md) for large-backup behavior and static Home Assistant sidebar labels.
 
-## v0.6.6 — density refresh and data management
 
-Traffic density loads once when enabled. Pan, zoom or change altitude selections, then press **Refresh density** in Altitude selection. The previous layer remains visible while loading. The result shows the actual density grid zoom, cell count and elapsed time. Collection continues at zoom 17 regardless of layer visibility; radial coverage remains 0.5° / 720 bins. Indexed viewport filtering avoids aggregating off-screen history. Small interactive results may reuse an all-band aggregate for up to 30 seconds; full exports always read the stored history.
+## Altitude heat maps and consistency envelopes
+
+The static sidebar title is Aircraft Bridge. Traffic Density supports Low/Middle/High combinations and All Traffic including Unknown. ADS-B maps offer on-demand dashed density envelopes for consistency comparison at 0.5°; the status page provides custom dates and JSON/GeoJSON exports. FAA exports describe reported traffic extent and do not enable receiver range rings. See [usage and verification notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.6.4-testing.md). Stored altitude counters and backup schema are preserved.
+
+## Density refresh and data management
+
+Traffic density loads once when enabled. Pan, zoom or change altitude selections, then press **Refresh density** beside **Fit aircraft**. The previous layer remains visible while loading. The result shows the actual density grid zoom, cell count and elapsed time. Collection continues at zoom 17 regardless of layer visibility; radial coverage remains 0.5° / 720 bins. Indexed viewport filtering avoids aggregating off-screen history. Small interactive results may reuse an all-band aggregate for up to 30 seconds; full exports always read the stored history.
 
 ### Large density restores outside Ingress
 
-If a large restore through Home Assistant Ingress reports **Failed to fetch**, use the Bridge directly on your LAN:
+The Bridge no longer imposes its original 256 MiB density-import ceiling; imports are disk-staged. Home Assistant Ingress has separate upload/proxy limits, so a large restore may still report **Failed to fetch**. Use the Bridge directly on your LAN for large backups:
 
 1. Open **Settings → Apps → FR24 dump1090 Bridge → Configuration** (called Add-ons on older Home Assistant versions).
 2. Under **Network**, assign an unused host port to the `8085/tcp` service, for example `8085`. Enable **Show disabled ports** if the mapping is hidden. Save and restart the App.
@@ -203,7 +229,7 @@ The direct HTTP service has no authentication; expose it only on your trusted LA
 
 ### Configuration fields
 
-SWIM VPN and the other optional connection fields now have explicit blank defaults. Enable **Show unused optional configuration options** when reviewing an existing installation whose saved options omit fields. Supply only the settings needed by the selected source. TFMS requires SWIM host, message VPN, username, password and queue. The App validates these at startup; the VPN is the Solace message VPN, not a home-network VPN. The Supervisor owns the configuration form; source selection does not dynamically hide unrelated fields.
+SWIM VPN and the other optional connection fields have explicit blank defaults. Enable **Show unused optional configuration options** when reviewing an existing installation whose saved options omit fields. Supply only the settings needed by the selected source. TFMS requires SWIM host, message VPN, username, password and queue. The App validates these at startup; the VPN is the Solace message VPN, not a home-network VPN. The Supervisor owns the configuration form; source selection does not dynamically hide unrelated fields.
 
 ### Danger Zone
 
@@ -215,9 +241,9 @@ Below Diagnostics on the status page:
 
 Export backups first. Individual actions require typing `CLEAR`; the all-data action requires `CLEAR ALL`. Configuration, credentials and other App instances are preserved. Collection resumes from empty datasets. Clear operations are serialized with collection and restore.
 
-## v0.6.7 — Settings recovery and compact controls
+## Settings recovery and compact controls
 
-The map now places **Density altitude selection** and **Density envelopes · comparison** side by side. Expand either or both independently. On small screens they stack. **Refresh density** sits beside **Fit aircraft** and reloads the heat cells for the current viewport and selected altitude bands. **Generate envelopes** builds the separate density-derived range outlines. Panning, zooming, or changing altitude bands still marks the heat view pending until you refresh it. **Range ring** stays on the main toolbar.
+The map places **Density altitude selection** and **Density envelopes · comparison** side by side. Expand either or both independently. On small screens they stack. **Refresh density** sits beside **Fit aircraft** and reloads the heat cells for the current viewport and selected altitude bands. **Generate envelopes** builds the separate density-derived range outlines. Panning, zooming, or changing altitude bands still marks the heat view pending until you refresh it. **Range ring** stays on the main toolbar.
 
 Status-page endpoints have a green border; the three density, envelope, and range export sections have yellow borders. The red Danger Zone follows the complete Diagnostics section, including the tile endpoint description.
 
@@ -229,7 +255,7 @@ At each successful configured startup, the App atomically saves its valid config
 
 To test recovery:
 
-1. Upgrade to v0.6.7 and start it with your working feed configuration. Open **Status → Settings backup / recovery** and confirm a saved snapshot is listed.
+1. Install v0.6.8 or later and start it with your working feed configuration. Open **Status → Settings backup / recovery** and confirm a saved snapshot is listed.
 2. Export density/range backups before any uninstall test. They remain under `/data` and are not preserved by this settings feature.
 3. Uninstall while leaving the option to delete the App configuration folder unchecked. Reinstall the same local or repository App identity and start it. Re-enter optional Network port mappings if using direct LAN access.
 4. With blank/incomplete feed settings the App serves a recovery page instead of starting collection. Open the Web UI, select **Restore saved settings**, confirm, then restart the App from Home Assistant. The restore writes the App's options through Supervisor; it does not silently override settings at startup.
@@ -239,12 +265,16 @@ Deleting the configuration folder also deletes the retained settings snapshot. H
 
 Implementation references: [public App configuration folder](https://developers.home-assistant.io/blog/2023/11/06/public-addon-config/) and [Supervisor App options](https://developers.home-assistant.io/docs/api/supervisor/endpoints/).
 
-## v0.6.8 — Data-operation logging
+## Data-operation logging
 
-App logs now record timestamped starts and outcomes for density/range imports, data exports, envelope generation, and Danger Zone clears. Entries include the selected source and dataset, elapsed seconds, HTTP status, available merge/bin/feature counts, clear target, and input/response byte counts where applicable. Failed requests and disconnected transfers are distinguished from completed responses. Response completion means the server sent the export, not proof that a browser saved it to disk.
+App logs record timestamped starts and outcomes for density/range imports, data exports, envelope generation, and Danger Zone clears. Entries include the selected source and dataset, elapsed seconds, HTTP status, available merge/bin/feature counts, clear target, and input/response byte counts where applicable. Failed requests and disconnected transfers are distinguished from completed responses. Response completion means the server sent the export, not proof that a browser saved it to disk.
 
 Routine heat-map queries retain their existing timing diagnostics. Automatic five-second range polling is excluded from export audit logs; range JSON download links use `?download=1` to identify explicit exports. Direct `/range-coverage` API reads remain polling reads unless that marker is supplied. Logs do not include feed credentials, configuration contents, or URL query strings.
 
 After restoring or clearing data on the status page, reload the map to discard its displayed snapshot. For heat cells, use Refresh density; for an already generated envelope comparison, use Generate envelopes again. Collection continues after a clear, so new observations can begin accumulating immediately.
 
-Settings recovery is unchanged from v0.6.7. Port mappings and Show in sidebar remain outside the settings snapshot. After changing a Network port mapping in Home Assistant, restart the App to apply it.
+Port mappings and Show in sidebar remain outside the settings snapshot. After changing a Network port mapping in Home Assistant, restart the App to apply it.
+
+## Release history
+
+See the [changelog](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/fr24-dump1090/CHANGELOG.md) for the development sequence and earlier releases. The v0.6.0–v0.6.7 entries describe development iterations included in the public v0.6.8 release.

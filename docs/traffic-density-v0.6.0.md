@@ -1,5 +1,9 @@
 # Traffic Density — v0.6.0
 
+> Historical development note for the version named above. Later iterations supersede some limits and UI behavior. See the [current App guide](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/fr24-dump1090/README.md) and [changelog](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/fr24-dump1090/CHANGELOG.md) for v0.6.8 behavior.
+
+Current v0.6.8 differences: source-separated storage uses `/data/traffic-density/<source>/YYYY-MM.dat`; density refresh is manual; altitude selections and envelope comparisons are implemented; disk-staged imports replace the original Bridge 256 MiB ceiling. Home Assistant Ingress has separate upload/proxy limits; use direct LAN access for large restores. The original sizing measurements below predate the additional spatial index and must not be treated as current disk-size forecasts.
+
 v0.6.0 adds an independent persistent observation-density dataset and one map layer, off by default. It preserves the released **0.5° / 720-bin** range-coverage implementation. Existing coverage remains authoritative. Legacy 1° coverage migration remains supported, but is not the current resolution and does not seed density.
 
 ## Spatial choice and measured storage

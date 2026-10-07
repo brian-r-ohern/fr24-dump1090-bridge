@@ -1,5 +1,7 @@
 # Changelog
 
+Version 0.6.8 is the public release of the traffic-density work. Entries 0.6.0–0.6.7 preserve its development sequence; they do not imply separate public releases.
+
 ## 0.6.8
 
 - Log data import/export/generation/clear starts and outcomes with source, dataset, available counts, bytes, duration and HTTP status. Distinguish rejection and disconnected transfer outcomes; keep automatic range polling out of export logs.

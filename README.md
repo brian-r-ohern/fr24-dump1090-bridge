@@ -72,7 +72,7 @@ Users with an authorized FAA SWIM subscription will need the connection details 
 
 ## Home marker
 
-The bridge can read Home Assistant `zone.home` through the supported App/Core API proxy and display it on the Raw ADS-B Map. Home coordinates are not included in `/status`, aircraft JSON, logs, or tile diagnostics. If the entity is unavailable, the map continues without the marker.
+The bridge can read Home Assistant `zone.home` through the supported App/Core API proxy and display it on the Raw ADS-B Map. Home coordinates are not included in `/status`, aircraft JSON, logs, or tile diagnostics. Home also supports range and density-envelope calculations and the TFMS geographic filter. Without Home, ADS-B feeds and density collection continue; TFMS needs Home for filtering.
 
 ## Endpoints
 <img width="790" height="382" alt="image" src="https://github.com/user-attachments/assets/15bfde9b-ff48-4152-8510-3d5f071e7419" />
@@ -89,7 +89,10 @@ The bridge can read Home Assistant `zone.home` through the supported App/Core AP
 - `/tracker-enrichment` — optional ADSB Aircraft Tracker map enrichment
 - `/map-config` — map configuration used by the Raw ADS-B Map
 - `/tile-debug` — map tile proxy diagnostics
-- `/settings — settings` backup and recovery
+- `/settings` — settings backup and recovery
+- `/traffic-density` — density cell statistics
+- `POST /traffic-density/import` — validated density restore
+- `POST /data/clear` — confirmed data clearing
 - `/traffic-density/status` — collection and query diagnostics
 - `/traffic-density/export` — density JSON backup
 - `/traffic-density.geojson` — spatial density export
@@ -160,7 +163,7 @@ The App runs under a Home Assistant AppArmor profile. The profile has been teste
 | Persistent App data/cache | `/data/**` | ✅ |
 | DNS resolution | IPv4/IPv6 datagram networking | ✅ |
 
-The App does not require raw sockets, unrestricted host filesystem access, Docker access, `/share`, `/media`, `/ssl`, `/backup`, `mount`, or `ptrace`.  The app mounts its dedicated /config folder to retain settings snapshots for recovery after reinstall.
+The App does not require raw sockets, unrestricted unrestricted host filesystem access, Docker access, `/share`, `/media`, `/ssl`, `/backup`, `mount`, or `ptrace`.  The app mounts its dedicated `/config` folder to retain settings snapshots for recovery after reinstall.
 
 ## License
 
