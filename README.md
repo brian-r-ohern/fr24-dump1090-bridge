@@ -32,7 +32,8 @@ For the alternate `flights_js` source, configure the receiver host, HTTP port, u
 The app currently supports `amd64` Home Assistant systems.
 
 ## Home Assistant App
-<img width="991" height="857" alt="image" src="https://github.com/user-attachments/assets/a7be378b-2772-4c62-9306-bcb95435872f" />
+<img width="1189" height="773" alt="image" src="https://github.com/user-attachments/assets/404b8c9d-86fe-419a-b04b-aa3e0edb04a0" />
+
 
 ## Raw ADS-B Map with density and range ring
 <img width="1024" height="566" alt="image" src="https://github.com/user-attachments/assets/efe60542-bb0b-41df-a8bf-b38eb26aacf3" />
