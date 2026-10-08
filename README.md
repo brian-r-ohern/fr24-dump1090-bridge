@@ -1,6 +1,6 @@
 # FR24 dump1090 Bridge for Live Tracking and Statistics in Home Assistant
 <img width="256" height="256" alt="Concept1" src="https://github.com/user-attachments/assets/b0ca6d94-d950-4c36-82c2-39d909fb79ba" />
-<img width="512" height="385" alt="image" src="https://github.com/user-attachments/assets/de67d959-169c-4451-ad62-552d45f48ecb" />
+<img width="512" height="386" alt="image" src="https://github.com/user-attachments/assets/a9017ee1-4e33-49e2-9701-d1e119dc3ad3" />
 
 FR24 dump1090 Bridge functions as a lightweight, non-invasive local aircraft-data layer for Home Assistant:
 - 🗺️ Live Visualization: Displays aircraft on an interactive, real-time map with live statistics.
