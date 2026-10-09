@@ -17,7 +17,8 @@ The recommended/default input is a receiver's SBS/BaseStation TCP feed on port 3
 - Density-derived range envelopes for comparison.
 - Settings recovery, data backup/restore, selective clearing, and operation logging.
 - Compact map controls with manual density refresh.
-  
+- [Jump to Roadmap](#Roadmap) see more details on the development future below
+
 ## Home Assistant installation
 
 1. In Home Assistant, open **Settings → Apps → Install app**.
@@ -172,7 +173,7 @@ The App does not require raw sockets, unrestricted unrestricted host filesystem 
 
 Apache License 2.0. See [LICENSE](LICENSE).
 
-## Known consumers and integrations
+## Known consumers integrations
 
 FR24 dump1090 Bridge publishes dump1090/readsb-compatible aircraft JSON
 intended for use by local applications that consume `aircraft.json`.
@@ -185,6 +186,11 @@ The following application has been used with the bridge:
   A Home Assistant integration for monitoring aircraft from a
   dump1090/readsb-compatible data source. Its documentation includes
   configuration guidance specifically for FR24 dump1090 Bridge.
+  
+- ** ADSB Sky Vista
+  https://github.com/aplittlecub/ADS-B-SkyVista
+
+  Aircraft display and enrichment Home Assistant endpoint 
 
 This is an independent project. It is not included with, maintained by,
 or affiliated with FR24 dump1090 Bridge.
@@ -207,7 +213,6 @@ The observed coverage outline is hidden for TFMS because its boundary reflects t
 
 Track history requires a configured `history_url` for every input. TFMS uses callsign (for example, `UCA4250`); ADS-B uses six-digit ICAO hex. See the developer-only tool note below.
 
-
 ## Developer-only track history
 
 Track history is a developer-only tool and appears only when `history_url` is configured. Contact the author for an API description. TFMS requests use callsign; ADS-B requests use ICAO hex. Configure the history service base URL; the bridge appends `/flight` and the appropriate query parameter.
@@ -219,3 +224,12 @@ The active range envelope uses **0.5° / 720 bins**, retained in v0.6.0. Each bi
 ## See the change log for full development history
 
 https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/fr24-dump1090/CHANGELOG.md
+
+
+## Roadmap
+The FR24 dump1090 Bridge was created to normalize local aircraft tracking data into dump1090/readsb-compatible endpoints. It now also provides a native map, persistent altitude-based traffic density, and empirical range envelopes.
+Future development will explore motion and spatial analysis, including closest point of approach (CPA), time to closest point of approach (TCPA), and identification of patterns such as holding, converging tracks, and recurring traffic concentrations. These capabilities will depend on the selected feed’s position precision, update cadence, and available metadata.
+**Any detected motion patterns and proximity alerts will be informational and intended for observation and analysis.**
+
+## Metadata Dependencies & Safety Disclaimer
+The accuracy of all spatial metrics depends entirely on the selected feed’s position precision, update cadence, latency, and underlying metadata quality. All detected motion patterns, tracking metrics, and proximity alerts are purely informational and intended strictly for observation, telemetry research, and analysis. This utility is not a flight safety tool and must never be used for real-world conflict resolution or active air traffic separation.
