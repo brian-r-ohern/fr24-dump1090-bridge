@@ -1,4 +1,5 @@
-# FR24 dump1090 Bridge for Live Tracking and Statistics in Home Assistant
+# FR24 dump1090 Bridge 
+# Live Tracking and Statistics in Home Assistant
 <img width="256" height="256" alt="Concept1" src="https://github.com/user-attachments/assets/b0ca6d94-d950-4c36-82c2-39d909fb79ba" />
 <img width="512" height="386" alt="image" src="https://github.com/user-attachments/assets/a9017ee1-4e33-49e2-9701-d1e119dc3ad3" />
 
