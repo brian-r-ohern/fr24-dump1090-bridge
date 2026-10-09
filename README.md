@@ -31,11 +31,10 @@ The recommended/default input is a receiver's SBS/BaseStation TCP feed on port 3
 
 For the alternate `flights_js` source, configure the receiver host, HTTP port, username, and password. For `aircraft_json`, configure the full URL of the dump1090/readsb-compatible feed.
 
-The app currently supports `amd64` Home Assistant systems.
+The app currently supports `amd64` Home Assistant systems and VMs.
 
 ## Home Assistant App
 <img width="1189" height="773" alt="image" src="https://github.com/user-attachments/assets/404b8c9d-86fe-419a-b04b-aa3e0edb04a0" />
-
 
 ## Raw ADS-B Map with density and range ring
 <img width="1024" height="566" alt="image" src="https://github.com/user-attachments/assets/efe60542-bb0b-41df-a8bf-b38eb26aacf3" />
@@ -112,11 +111,11 @@ The Raw ADS-B Map also uses a responsive header that adapts to narrow mobile dis
 
 ## Using it with ADSB Aircraft Tracker
 
-The bridge is intended to work as a source for consumers that accept dump1090/readsb-style `aircraft.json`, including the Home Assistant ADSB Aircraft Tracker integration.
+The bridge is intended to work as a source for consumers that accept dump1090/readsb-style `aircraft.json`, including the Home Assistant ADSB Aircraft Tracker integration.  If you do, the app will automatically leverage the enriched aircraft metatdata provided by ADSB Aircraft Tracker.  
 
 ### Finding the Home Assistant App hostname
 
-When another Home Assistant integration needs to connect to the bridge, use the **Hostname** shown on the FR24 dump1090 Bridge **Info** page together with port `8085`.
+When another Home Assistant integration such as those listed in [Jump to Known consumer integrations](#Known consumer integration) needs to connect to the bridge, use the **Hostname** shown on the FR24 dump1090 Bridge **Info** page together with port `8085`.
 
 Open **Settings → Apps → FR24 dump1090 Bridge → Info**. The hostname appears under **Controls → Hostname**.
 
@@ -167,39 +166,33 @@ The App runs under a Home Assistant AppArmor profile. The profile has been teste
 | Persistent App data/cache | `/data/**` | ✅ |
 | DNS resolution | IPv4/IPv6 datagram networking | ✅ |
 
-The App does not require raw sockets, unrestricted unrestricted host filesystem access, Docker access, `/share`, `/media`, `/ssl`, `/backup`, `mount`, or `ptrace`.  The app mounts its dedicated `/config` folder to retain settings snapshots for recovery after reinstall.
+The App does not require raw sockets, unrestricted host filesystem access, Docker access, `/share`, `/media`, `/ssl`, `/backup`, `mount`, or `ptrace`.  The app mounts its dedicated `/config` folder to retain settings snapshots for recovery after reinstall.
 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
 
-## Known consumers integrations
+## Known consumer integrations
 
-FR24 dump1090 Bridge publishes dump1090/readsb-compatible aircraft JSON
-intended for use by local applications that consume `aircraft.json`.
+FR24 dump1090 Bridge publishes dump1090/readsb-compatible aircraft JSON intended for use by local applications that consume `aircraft.json`.
 
-The following application has been used with the bridge:
+The following applications have been used with the bridge:
 
 - **ADSB Aircraft Tracker for Home Assistant**  
   https://github.com/hook-365/adsb-aircraft-tracker
 
-  A Home Assistant integration for monitoring aircraft from a
-  dump1090/readsb-compatible data source. Its documentation includes
-  configuration guidance specifically for FR24 dump1090 Bridge.
+  A Home Assistant integration for monitoring aircraft from a dump1090/readsb-compatible data source. Its documentation includes configuration guidance specifically for FR24 dump1090 Bridge.
   
-- ** ADSB Sky Vista
+- **ADSB Sky Vista**
   https://github.com/aplittlecub/ADS-B-SkyVista
 
   Aircraft display and enrichment Home Assistant endpoint 
 
-This is an independent project. It is not included with, maintained by,
-or affiliated with FR24 dump1090 Bridge.
+Those are independent projects. They are not included with, maintained by, or affiliated with FR24 dump1090 Bridge.
 
+### Optional aircraft enrichment
 
-### Optional map enrichment
-
-Map enrichment can be selected with `enrichment_source`. The default `adsb_tracker` preserves existing behavior; set it to `none` to disable ADSB Aircraft Tracker enrichment without changing the selected aircraft data source.
-
+Aircraft enrichment with routes, icons, flight numbers, airlines, military aircraft flagging, and other metadata can be selected with an `enrichment_source`. The default `adsb_tracker` preserves existing behavior; set it to `none` to disable ADSB Aircraft Tracker enrichment without changing the selected aircraft data source.
 
 ## FAA SWIM TFMS (v0.5.3)
 
@@ -224,7 +217,6 @@ The active range envelope uses **0.5° / 720 bins**, retained in v0.6.0. Each bi
 ## See the change log for full development history
 
 https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/fr24-dump1090/CHANGELOG.md
-
 
 ## Roadmap
 The FR24 dump1090 Bridge was created to normalize local aircraft tracking data into dump1090/readsb-compatible endpoints. It now also provides a native map, persistent altitude-based traffic density, and empirical range envelopes.
