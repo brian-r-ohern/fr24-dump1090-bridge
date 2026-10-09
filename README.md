@@ -115,7 +115,7 @@ The bridge is intended to work as a source for consumers that accept dump1090/re
 
 ### Finding the Home Assistant App hostname
 
-When another Home Assistant integration such as those listed in [Jump to Known consumer integrations](#Known consumer integrations) needs to connect to the bridge, use the **Hostname** shown on the FR24 dump1090 Bridge **Info** page together with port `8085`.
+When another Home Assistant integration such as those listed in [Jump to Known-consumer-integrations](#Known-consumer-integrations) needs to connect to the bridge, use the **Hostname** shown on the FR24 dump1090 Bridge **Info** page together with port `8085`.
 
 Open **Settings → Apps → FR24 dump1090 Bridge → Info**. The hostname appears under **Controls → Hostname**.
 
@@ -172,7 +172,7 @@ The App does not require raw sockets, unrestricted host filesystem access, Docke
 
 Apache License 2.0. See [LICENSE](LICENSE).
 
-## Known consumer integrations
+## Known-consumer-integrations
 
 FR24 dump1090 Bridge publishes dump1090/readsb-compatible aircraft JSON intended for use by local applications that consume `aircraft.json`.
 
