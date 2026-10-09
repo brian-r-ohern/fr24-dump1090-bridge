@@ -172,7 +172,7 @@ The App does not require raw sockets, unrestricted host filesystem access, Docke
 
 Apache License 2.0. See [LICENSE](LICENSE).
 
-## Known-consumer-integrations
+## Known consumer integrations
 
 FR24 dump1090 Bridge publishes dump1090/readsb-compatible aircraft JSON intended for use by local applications that consume `aircraft.json`.
 
