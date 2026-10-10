@@ -1,0 +1,8 @@
+{
+  "title": "Aircraft Bridge",
+  "config": {
+    "step": {"user": {"title": "Select a Bridge instance", "description": "Enable dashboard integration in the App configuration and restart the App first. Each instance gets its own status entity.", "data": {"instance": "Bridge instance"}}},
+    "error": {"cannot_connect": "Cannot reach this Bridge. Start the App and check its settings, then retry."},
+    "abort": {"already_configured": "This Bridge instance is already configured.", "no_instances": "No enabled Bridge instances found. Enable dashboard integration in the App configuration and restart the App."}
+  }
+}

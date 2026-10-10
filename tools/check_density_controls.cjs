@@ -7,7 +7,7 @@ const start=html.indexOf('const bandInputs='),end=html.indexOf('const envelopeLa
 assert(start>=0&&end>start,'Find shipped altitude control handlers');
 const inputs=['low','middle','high','all'].map(value=>({value,checked:value==='all',handlers:{},addEventListener(name,fn){this.handlers[name]=fn}}));
 let updates=0;
-const context=vm.createContext({document:{querySelectorAll:selector=>{assert.equal(selector,'.density-band');return inputs}},refreshDensity:()=>updates++});
+const context=vm.createContext({document:{querySelectorAll:selector=>{assert.equal(selector,'.density-band');return inputs}},markDensityChanged:()=>updates++});
 vm.runInContext(html.slice(start,end),context);
 const selection=()=>vm.runInContext('densitySelection()',context);
 const change=(value,checked)=>{const input=inputs.find(x=>x.value===value);input.checked=checked;input.handlers.change()};

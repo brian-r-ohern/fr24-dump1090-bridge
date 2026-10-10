@@ -85,8 +85,16 @@ class DensityBridgeTests(unittest.TestCase):
         self.assertNotIn('receiver_host',str(records))
 
     def test_range_download_is_logged_but_disconnected_export_is_aborted(self):
-        with patch('builtins.print') as output:
+        finished = threading.Event()
+        def capture_completion(*args, **kwargs):
+            if args and ' Data operation ' in str(args[0]):
+                record = json.loads(args[0].split(' Data operation ', 1)[1])
+                if record.get('phase') == 'completed' and record.get('dataset') == 'range-coverage':
+                    finished.set()
+        with patch('builtins.print', side_effect=capture_completion) as output:
             self.assertEqual(self.request('/range-coverage?download=1')[0],200)
+            # The HTTP body may arrive before the server thread logs completion.
+            self.assertTrue(finished.wait(2), 'Server did not log export completion')
         records=[json.loads(call.args[0].split(' Data operation ',1)[1]) for call in output.call_args_list
                  if call.args and ' Data operation ' in str(call.args[0])]
         self.assertEqual(records[-1]['phase'],'completed')

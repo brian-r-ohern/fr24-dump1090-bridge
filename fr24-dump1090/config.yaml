@@ -1,5 +1,5 @@
 name: "FR24 dump1090 Bridge"
-version: "0.6.8"
+version: "0.6.9.3"
 slug: "fr24_dump1090"
 description: >-
   Normalizes a selected local aircraft data source into
@@ -13,16 +13,21 @@ init: false
 ingress: true
 ingress_port: 8085
 homeassistant_api: true
+hassio_api: true
 panel_icon: mdi:airplane
 panel_title: "Aircraft Bridge"
 apparmor: true
 map:
   - "addon_config:rw"
+  - type: homeassistant_config
+    read_only: false
+    path: /homeassistant
 ports:
   8085/tcp: null
 ports_description:
   8085/tcp: "FR24 dump1090 bridge HTTP service (optional LAN exposure)"
 options:
+  dashboard_integration: false
   source: "sbs_30003"
   receiver_host: ""
   username: ""
@@ -49,6 +54,7 @@ options:
   swim_retry_interval_ms: 3000
 
 schema:
+  dashboard_integration: bool?
   source: "list(sbs_30003|flights_js|aircraft_json|swim_tfms)"
   density_legacy_source: "list(unassigned|sbs_30003|flights_js|aircraft_json|swim_tfms)?"
   receiver_host: str?

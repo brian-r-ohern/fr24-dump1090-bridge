@@ -10,12 +10,15 @@ COPY swim_tfms.py /opt/swim_tfms.py
 COPY traffic_density.py /opt/traffic_density.py
 COPY density_archive.py /opt/density_archive.py
 COPY density_envelopes.py /opt/density_envelopes.py
+COPY feed_consumers.py /opt/feed_consumers.py
+COPY dashboard_install.py /opt/dashboard_install.py
+COPY dashboard_integration /opt/dashboard_integration
 RUN chmod a+x /run.sh
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD curl --fail --silent http://127.0.0.1:8085/health >/dev/null || exit 1
 
-ARG BUILD_VERSION=0.6.8
+ARG BUILD_VERSION=0.6.9.1
 ARG BUILD_ARCH=amd64
 LABEL \
   io.hass.version="${BUILD_VERSION}" \

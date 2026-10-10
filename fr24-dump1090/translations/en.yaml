@@ -1,4 +1,12 @@
 configuration:
+  dashboard_integration:
+    name: Enable dashboard integration
+    description: >-
+      Install the bundled Aircraft Bridge integration and card automatically.
+      Save and restart this App, then restart Home Assistant Core after first
+      install or upgrade. Add Aircraft Bridge in Devices & services, select
+      this instance, refresh your browser and choose Aircraft Bridge in the
+      dashboard card picker. No file copying, YAML or exposed LAN port required.
   density_legacy_source:
     name: Original source of existing density history
     description: >-

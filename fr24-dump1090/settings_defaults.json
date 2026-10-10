@@ -22,5 +22,6 @@
   "swim_radius_nm": 250,
   "swim_aircraft_timeout": 120,
   "swim_retry_count": 3,
-  "swim_retry_interval_ms": 3000
+  "swim_retry_interval_ms": 3000,
+  "dashboard_integration": false
 }

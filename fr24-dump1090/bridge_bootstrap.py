@@ -27,7 +27,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         if path == '/health':
             self.send_json({'service_status': 'ok', 'mode': 'settings_recovery', 'feed_status': 'not_configured'})
         elif path == '/status':
-            self.send_json({'build_version': '0.6.8', 'service_status': 'ok', 'mode': 'settings_recovery', 'feed_status': 'not_configured'})
+            self.send_json({'build_version': '0.6.9.3', 'service_status': 'ok', 'mode': 'settings_recovery', 'feed_status': 'not_configured'})
         elif path in ('/', '/settings', '/status-page'):
             self._send(settings_page(recovery_error=True).encode(), 'text/html; charset=utf-8')
         else:
@@ -38,6 +38,11 @@ class RecoveryHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    from dashboard_install import configure_dashboard
+    try:
+        configure_dashboard(read_options())
+    except (OSError, ValueError, TypeError):
+        print('[WARN] Dashboard options unavailable; collection/recovery will continue.', flush=True)
     try:
         checked_options(read_options())
     except (ValueError, OSError, TypeError):

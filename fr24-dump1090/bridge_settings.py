@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 
 from bridge_config import validate_options
 
-VERSION = '0.6.8'
+VERSION = '0.6.9.1'
 TOKEN = secrets.token_urlsafe(32)
 LOCK = threading.RLock()
 LIMIT = 65536
@@ -37,7 +37,10 @@ def checked_options(options):
     merged = {**defaults, **options}
     for key, default in defaults.items():
         value = merged[key]
-        if isinstance(default, str):
+        if isinstance(default, bool):
+            if not isinstance(value, bool):
+                raise ValueError('Invalid settings field: ' + key)
+        elif isinstance(default, str):
             if not isinstance(value, str):
                 raise ValueError('Invalid settings field: ' + key)
         elif isinstance(value, bool) or not isinstance(value, int):
@@ -135,8 +138,8 @@ def settings_page(recovery_error=None):
     error = ('<p>Collection is paused because feed settings are incomplete or invalid. Restore the saved settings, '
              'or configure the App in Home Assistant, then restart it.</p>') if recovery_error else ''
     return '''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Bridge settings · v0.6.8</title><style>body{font:16px system-ui;max-width:850px;margin:2em auto;padding:0 1em;background:#fafafa;color:#222}section{border:2px solid #398851;border-radius:6px;padding:1em}button{padding:.6em;margin:.3em}p{line-height:1.5}</style></head><body>
-<h1>Bridge settings · v0.6.8</h1>''' + error + '''<section><h2>Settings backup / recovery</h2>
+<title>Bridge settings · v0.6.9.1</title><style>body{font:16px system-ui;max-width:850px;margin:2em auto;padding:0 1em;background:#fafafa;color:#222}section{border:2px solid #398851;border-radius:6px;padding:1em}button{padding:.6em;margin:.3em}p{line-height:1.5}</style></head><body>
+<h1>Bridge settings · v0.6.9.1</h1>''' + error + '''<section><h2>Settings backup / recovery</h2>
 <p>''' + escape(summary) + '''</p><p>Valid configuration is saved automatically when the App starts.
 The snapshot includes feed credentials. It stays in the host configuration folder if you keep that folder when uninstalling.
 Density and range data are backed up separately.</p>

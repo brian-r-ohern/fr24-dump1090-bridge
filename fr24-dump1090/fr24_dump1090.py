@@ -21,6 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import HTTPDigestAuthHandler, HTTPPasswordMgrWithDefaultRealm, Request, build_opener, urlopen
 
+from feed_consumers import FeedConsumers
 from bridge_config import validate_options
 from bridge_settings import settings_page, settings_post
 from traffic_density import DensityStore
@@ -32,7 +33,7 @@ import sqlite3
 
 from swim_tfms import SwimTfmsClient, parse_tfms_tracks, update_tfms_course
 
-BUILD_VERSION = "0.6.8"
+BUILD_VERSION = "0.6.9.3"
 
 CONFIG_PATH = os.environ.get("FR24_OPTIONS_PATH", "/data/options.json")
 LISTEN_HOST = "0.0.0.0"
@@ -1259,7 +1260,14 @@ def human_utc(timestamp):
     return "Never" if timestamp is None else datetime.fromtimestamp(timestamp, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+feed_consumers = FeedConsumers()
+
 def snapshot_status():
+    status = _snapshot_source_status()
+    status["feed_consumers"] = feed_consumers.snapshot()
+    return status
+
+def _snapshot_source_status():
     with lock:
         aircraft = list(latest_data.get("aircraft", []))
         served = requests_served
@@ -1458,9 +1466,17 @@ async function refreshCoverage(){if(!coverageOutlineEnabled||!rangeToggle.checke
 function clearTrack(){if(trackLine){map.removeLayer(trackLine);trackLine=null}trackStatus.textContent=''}
 async function showTrack(){const hex=document.getElementById('trackhex').value.trim().toLowerCase();const queryType=document.getElementById('trackhex').dataset.query||'hex';if(!(queryType==='callsign'?/^[a-z0-9]{1,16}$/:/^[0-9a-f]{6}$/).test(hex)){trackStatus.textContent=queryType==='callsign'?'Flight callsign required':'6-digit hex required';return}trackStatus.textContent='Loading…';try{const r=await fetch(`track-history?${queryType}=${encodeURIComponent(hex)}`,{cache:'no-store'});const d=await r.json();if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);const fields=Array.isArray(d.trail_fields)?d.trail_fields:[],ilat=fields.indexOf('lat'),ilon=fields.indexOf('lon'),pts=(Array.isArray(d.trail)?d.trail:[]).map(row=>[Number(row[ilat]),Number(row[ilon])]).filter(p=>Number.isFinite(p[0])&&Number.isFinite(p[1]));clearTrack();if(pts.length<1){trackStatus.textContent='No positions';return}trackLine=L.polyline(pts,{weight:4,opacity:.75,interactive:false}).addTo(map);trackStatus.textContent=`${(d.callsign||d.query||hex).toUpperCase()} · ${pts.length} positions`;trackLine.bringToFront();stabilizeMap()}catch(err){trackStatus.textContent=err.message}}
 document.getElementById('trackshow').addEventListener('click',showTrack);document.getElementById('trackclear').addEventListener('click',clearTrack);document.getElementById('trackhex').addEventListener('keydown',e=>{if(e.key==='Enter')showTrack()});
-async function refresh(){try{const [ar,sr,er]=await Promise.all([fetch('data/aircraft.json',{cache:'no-store'}),fetch('status',{cache:'no-store'}),fetch('tracker-enrichment',{cache:'no-store'})]);if(er.ok)enrichment=await er.json();else enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),status=sr.ok?await sr.json():null,active=new Set(),points=[];for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);const flags=flagsFor(key,ac),orientation=displayTrack(key,ac,lat,lon);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(orientation.degrees,flags)}).addTo(map);m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false});markers.set(key,m)}else{m.setLatLng([lat,lon]);m.setIcon(icon(orientation.degrees,flags));if(m.getPopup())m.setPopupContent(popup(ac,flags,key,orientation));else m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false})}}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}lastBounds=points.length?L.latLngBounds(points):null;if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refreshCoverage();setInterval(refreshCoverage,5000);refresh();setInterval(refresh,1000)})();
+async function refresh(){try{const [ar,sr,er]=await Promise.all([fetch('data/aircraft.json?client_id=bridge-map',{cache:'no-store'}),fetch('status',{cache:'no-store'}),fetch('tracker-enrichment',{cache:'no-store'})]);if(er.ok)enrichment=await er.json();else enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),status=sr.ok?await sr.json():null,active=new Set(),points=[];for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);const flags=flagsFor(key,ac),orientation=displayTrack(key,ac,lat,lon);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(orientation.degrees,flags)}).addTo(map);m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false});markers.set(key,m)}else{m.setLatLng([lat,lon]);m.setIcon(icon(orientation.degrees,flags));if(m.getPopup())m.setPopupContent(popup(ac,flags,key,orientation));else m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false})}}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}lastBounds=points.length?L.latLngBounds(points):null;if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refreshCoverage();setInterval(refreshCoverage,5000);refresh();setInterval(refresh,1000)})();
 </script></body></html>
 '''
+
+
+CARD_NAV_SCRIPT = r"""<script>
+try { const key='aircraft-bridge-navigation', raw=sessionStorage.getItem(key);
+if(raw){const n=JSON.parse(raw), targets=['status-page','settings'];
+if(Date.now()-n.at>=0 && Date.now()-n.at<30000 && targets.includes(n.target) && parent.location.pathname===n.path){sessionStorage.removeItem(key);location.replace(n.target);}}
+} catch(e) { /* Map remains usable when browser storage is unavailable. */ }
+</script>"""
 
 class Handler(BaseHTTPRequestHandler):
     def _operation(self, method):
@@ -1799,6 +1815,8 @@ class Handler(BaseHTTPRequestHandler):
             with lock:
                 payload = latest_data
             self.send_json(payload)
+            feed_consumers.record(self.client_address[0], self.headers.get("User-Agent", ""),
+                                  parse_qs(query_string).get("client_id", [""])[0])
             return
         if path == "/health":
             self.send_json({"service_status": "ok", "uptime_seconds": round(time.time() - START_TIME, 1)})
@@ -1811,6 +1829,7 @@ class Handler(BaseHTTPRequestHandler):
             if CFG["source"] == "swim_tfms":
                 page = page.replace('id="envelope-control" class="analysis-controls"', 'id="envelope-control" class="analysis-controls" hidden')
                 page = page.replace('id="range-control" style="font-size:12px"', 'id="range-control" style="display:none;font-size:12px"')
+            page = page.replace("<head>", "<head>" + CARD_NAV_SCRIPT, 1)
             self.send_html(page)
             return
         if path == "/status-page":
@@ -1859,6 +1878,9 @@ a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file
 <tr><td>Aircraft with position</td><td>{s['aircraft_with_position']}</td></tr><tr><td>Aircraft without position</td><td>{s['aircraft_without_position']}</td></tr>
 <tr><td>ADSB Aircraft Tracker</td><td>{(lambda e: 'Detected / active' if e.get('tracker_state') == 'active' else ('Temporarily unavailable' if e.get('tracker_state') == 'unavailable' else 'Awaiting detection'))(refresh_tracker_enrichment())}</td></tr><tr><td>O/D airport</td><td>{CFG['destination_airport'] or 'Not configured'}</td></tr>
 <tr><td>HTTP requests served</td><td>{s['requests_served']}</td></tr><tr><td>Uptime</td><td>{s['uptime_seconds']} sec</td></tr></table>
+<h2>Feed dependencies</h2><p>{s['feed_consumers']['external_count']} recent external client groups · {s['feed_consumers']['internal_count']} built-in map client groups (60-second window).</p>
+<p>Stopping or uninstalling this Bridge interrupts dependent applications. Address/user-agent groups may combine several apps; zero recent clients does not prove there are no dependencies. Client identifiers are self-reported.</p>
+<ul>{''.join('<li>' + escape(c['label']) + ' · ' + str(c['last_seen_age_seconds']) + ' seconds ago · ' + escape(c['identification']) + '</li>' for c in s['feed_consumers']['clients']) or '<li>No recent feed requests.</li>'}</ul>
 <h2>Navigation</h2><p><a href="settings">Settings backup / recovery</a> · <a href=\"./\">Raw ADS-B Map</a></p>
 <section style="border:2px solid #398851;border-radius:6px;padding:1em;margin:1em 0"><h2>Data &amp; API Endpoints</h2><p>
 <a href=\"data/aircraft.json\">/data/aircraft.json</a> &mdash; normalized aircraft data<br>

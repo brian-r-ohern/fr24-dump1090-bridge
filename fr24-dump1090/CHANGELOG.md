@@ -2,6 +2,30 @@
 
 Version 0.6.8 is the public release of the traffic-density work. Entries 0.6.0–0.6.7 preserve its development sequence; they do not imply separate public releases.
 
+## 0.6.9.3
+
+- Prefer each App’s registered sidebar route (such as `/local_fr24_dump1090`), with `/app/<full-slug>` as the current generic fallback when the sidebar is disabled. The old `/hassio/ingress/<full-slug>` destination could fall back to the default dashboard even with a valid routing event.
+- Publish the current App path on the status entity and translate old paths already saved in cards. Use the registered frontend panels to retain compatibility with older HA; preserve explicit dedicated-sidebar paths. Map/status/settings handoffs use the resolved destination and keep instance identities separate.
+- Add route-selection regression checks for both local and repository instances and all three buttons. Existing integration entries and cards remain valid.
+
+## 0.6.9.2
+
+- Register the versioned card automatically as a Lovelace module resource. Load the existing resource collection before creating/updating only the Bridge entry; preserve other resources. YAML resource mode retains frontend loading without editing YAML.
+- Correct all three card buttons to send Home Assistant a CustomEvent with routing options rather than an incomplete Event. Preserve the constrained map/status/settings Ingress handoff.
+- Serialize shared card registration across multiple App entries. Existing integration entries and cards remain valid; restart the App and HA Core, then reload the browser after upgrading.
+
+## 0.6.9.1
+
+- Correct card feed status by reading the entity state when no feed_status attribute exists. Default titles follow the selected feed; hide unavailable source-specific message rates.
+- Add opt-in automatic installation of the bundled HA companion integration, separate internal status polling per App instance, frontend card loading and a visual entity/title editor. Users enable the option, restart the App and HA Core, add Aircraft Bridge in Devices & services, then select the card in the picker.
+- Preserve old settings snapshots with a default-disabled dashboard option. Add only the required Home Assistant configuration mount and self-info Supervisor access. No density/range migration or consumer-counting changes.
+
+## 0.6.9
+
+- Add a dashboard status card with source/version header, status diagnostics and Ingress navigation to the map, status and settings recovery. Read status from an HA REST entity without publishing a host port.
+- Track successful aircraft-feed requests for 60 seconds and expose recent internal/external client groups through `/status` and the status page. Support self-reported `client_id` labels; explicitly mark address/User-Agent fallback grouping as an estimate. Exclude non-feed requests and keep tracking bounded and volatile.
+- Document feed dependencies before stopping/uninstalling, two-instance card configuration and an optional HA count sensor. No dataset/settings migration.
+
 ## 0.6.8
 
 - Log data import/export/generation/clear starts and outcomes with source, dataset, available counts, bytes, duration and HTTP status. Distinguish rejection and disconnected transfer outcomes; keep automatic range polling out of export logs.
