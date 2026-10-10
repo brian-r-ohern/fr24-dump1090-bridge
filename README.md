@@ -12,12 +12,13 @@ FR24 dump1090 Bridge functions as a lightweight, non-invasive local aircraft-dat
 
 The recommended/default input is a receiver's SBS/BaseStation TCP feed on port `30003`. An authenticated FR24 `/flights.js` feed or an existing dump1090/readsb `aircraft.json` feed can be selected as mutually exclusive alternatives. An FR24 receiver is therefore not required when a compatible `aircraft.json` source is already available. FAA SWIM TFMS is a fourth option for users with an authorized subscription and a configured feed.
 
-## New in v0.6.8
+## New in v0.6.9.x
 
-- Persistent traffic density with Low, Middle, High, and All Traffic views.
-- Density-derived range envelopes for comparison.
-- Settings recovery, data backup/restore, selective clearing, and operation logging.
-- Compact map controls with manual density refresh.
+Adds an Aircraft Bridge dashboard card with feed status, aircraft counts, build version and links to the map, status and settings recovery pages.
+- Optional dashboard integration installs the card automatically and provides a visual editor.
+- Tracks recent feed consumers to help identify dependencies before stopping or uninstalling the Bridge.
+- Supports separate cards for multiple Bridge instances.
+To enable the card, turn on Dashboard integration, restart the App and Home Assistant Core, then add Aircraft Bridge under Devices & services and select it from the dashboard card picker.
 - See the [Roadmap](#roadmap) for future development plans.
 
 ## Home Assistant installation
