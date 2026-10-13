@@ -1,6 +1,105 @@
+# 0.7.0-dev.13
+
+## 0.7.0-dev.13
+
+- Add live Map theme Auto/Light/Dark toolbar selector, applying the palette immediately without restart or reload.
+- Preserve the user's open-page choice across periodic map-config refreshes; the App setting remains the default for newly loaded map pages.
+- Retain basemap-only palette changes and dynamic browser preference handling in Auto.
+
+
+## 0.7.0-dev.12
+
+- Add map_theme auto/light/dark, default auto, with App configuration labels, strict validation and persistent settings recovery.
+- Auto follows browser/device color preference changes; explicit light/dark overrides it. Palette styling is scoped to basemap tiles so aircraft and analytical layers retain their colors.
+- Preserve existing tile provider/cache and document theme behavior and testing. Make the audit-log test independent of concurrent response-completion order.
+
+
+## 0.7.0-dev.11
+
+- Prefer fresh SFDPS reported ground speed for stable-speed/acceleration/deceleration; retain position-derived fallback, comparison and course/turn analysis.
+- Record speed basis in states/primitives/log counts and terminate speed events on basis switches. Preserve existing ADS-B behavior and TFMS exclusion.
+- Enable direct-speed ETA on the SFDPS local map and add a separately labeled experimental transport-jet descent/slowdown arrival range with input gates and explicit unresolved/fallback reasons.
+- Refresh the pinned PDDL airport snapshot with elevation/type and document exact equations, profile values, source provenance and validation limitations.
+
+
+## 0.7.0-dev.10
+
+- Automatically load pending, fully cached fresh density views after pan/zoom/band changes, with server-enforced cache-only mode and safe expiry/invalidation handling.
+- Add opt-in popup speed diagnostics and bounded aggregate verbose logs for every motion-enabled source.
+- Explain stable-speed blockers, accepted position intervals, position-derived speed range/residual/trend and reported-speed comparisons, preserving SFDPS speed semantics and field timing provenance.
+- Leave detector thresholds, FAA output isolation and source exclusions unchanged.
+
+
+## 0.7.0-dev.9
+
+- Automatically load density on enable and show compact current-viewport cached/missing/stale tile counts through a metadata-only cache inventory route.
+- Keep detailed grid/timing diagnostics off the main banner; retain explicit load and forced refresh controls.
+- Enable SFDPS density in its own store and local motion analysis with independent report timestamps, a source-specific quality profile and reported-altitude provenance.
+- Preserve FAA local-view isolation, disabled range/envelopes, and TFMS/flights.js motion exclusions.
+- Document validation and preview limits in `docs/v0.7.0-dev.9-testing.md` and the motion engineering notes.
+
+
+- Add rebuildable daily parent totals at zooms 8/11/14 with transactional live maintenance.
+- Add bounded two-hour density tile caching, generation time and explicit Refresh now.
+- Invalidate caches on restore, clear and retention pruning; keep full backups authoritative.
+- Preserve fine observations, source separation and FAA output restrictions.
+
+# 0.7.0-dev.7
+
+- Use existing spatial and cell/date indexes before aggregating viewport density.
+- Group numeric coordinates instead of repeatedly parsing text cell IDs.
+- Add query-strategy diagnostics and baseline SQL equivalence tests.
+- Preserve schema, collection statistics, export formats and source eligibility.
+
+# 0.7.0-dev.6
+
+- Add verbose SQLite query plans, page/cache settings, approximate VM instruction counts and query-thread CPU timing.
+- Add explicit density cache bypass for repeatable diagnostics.
+- Preserve counters, datasets, source eligibility, query results and existing index structure.
+
+# 0.7.0-dev.5
+
+- Optional bounded verbose motion rejection and density phase timing diagnostics; settings backups retain the toggle.
+- Zoom-dependent 24/36 px aircraft icons with centered anchors.
+- Relocate motion display help to status page; show intentionally disabled Tracker correctly.
+- Preserve existing analytics thresholds, source eligibility and histories.
+
 # Changelog
 
+## 0.7.0-dev.4
+
+- Increase aircraft SVG/marker dimensions 1.5× to 36 px, with centered 18 px anchors.
+- Add local-view `swim_sfdps` FIXM surveillance parsing, shared Solace transport and geographic filtering, GUFI identity, reported metadata and course from successive observed positions.
+- Disable SFDPS density storage/collection/import/export, range and motion processing; preserve existing source histories.
+- Block dump1090 aircraft output and history/data exports for both FAA sources; refresh their local map through embedded HTML display state. Dashboard titles identify local-view mode.
+- Bound SFDPS view state, reject stale/future/out-of-order updates, and sanitize SWIM exception reporting.
+- Add synthetic parser/isolation tests and setup/engineering notes; no captured FAA records included.
+
+
 Version 0.6.8 is the public release of the traffic-density work. Entries 0.6.0–0.6.7 preserve its development sequence; they do not imply separate public releases.
+
+## v0.7.0-dev.3 — Motion exploration (local preview)
+
+- Motion panel offers live counts and any-label filtering. Fit aircraft fits the shown subset.
+- Optional motion colors with legend/overlap priority, retaining O/D badges, military popup labels and closest glow.
+- ETA labels identify stale/unknown position age; baseline calculation unchanged.
+- Configurable Tracker aggregate/closest/military entities with sanitized failure diagnostics. Optional sensor failures no longer block route metadata.
+- Updated engineering notes document a future coupled descent/approach model and validation prerequisites; modeled arrival is not implemented here.
+- No data migration or motion-threshold changes.
+
+## 0.7.0-dev.2 (local development diagnostics)
+
+- Add current motion-quality and primitive counts to collection logs at most once per minute, without aircraft identities.
+- Explain warming-up eligibility, overlapping labels, freshness, support durations and observed versus reported vertical rate.
+- No data migration or motion-threshold changes.
+
+## 0.7.0-dev.1 (local motion-foundation preview)
+
+- Add map-only destination distance and a constant-current-ground-speed ETA with UTC arrival time. Use Tracker destination enrichment for ADS-B and native arrival metadata for TFMS; omit unavailable/invalid estimates.
+- Bundle a local airport lookup generated from a pinned October 10, 2026 OurAirports-derived PDDL CSV, with unambiguous IATA/ICAO alias matching and provenance. No Internet airport lookup or feed changes.
+- Add bounded in-memory position history and basic observed motion primitives for SBS and standard aircraft.json. Exclude TFMS and flights.js; preserve their existing feed/density/ETA behavior.
+- Publish current states and exact threshold/counter diagnostics through /motion and /motion/status; show labels and derived trends in aircraft popups. Keep active/completed primitive summaries bounded and reset continuity at gaps/discontinuities.
+- Document implemented calculations and provisional thresholds separately from future geometric detectors. No settings, range or density migration.
 
 ## 0.6.9.3
 

@@ -249,7 +249,7 @@ class SwimTfmsClient:
             except Exception as exc:
                 # Do not ACK a payload we failed to process; the durable queue
                 # may redeliver it after reconnect/restart.
-                self.on_state('message_error', str(exc))
+                self.on_state('message_error', type(exc).__name__)
         self.on_state('stopping', None)
 
     def stop(self):

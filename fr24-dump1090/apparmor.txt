@@ -10,6 +10,7 @@ profile ADDON_SLUG flags=(attach_disconnected,mediate_deleted) {
   # Network access
   #
   # Required for:
+  # - FAA SWIM TFMS/SFDPS Solace TLS input
   # - SBS/BaseStation TCP input
   # - FR24 flights.js HTTP input
   # - dump1090/readsb aircraft.json HTTP/HTTPS input
@@ -45,12 +46,19 @@ profile ADDON_SLUG flags=(attach_disconnected,mediate_deleted) {
   /usr/bin/python3 ix,
   /usr/bin/python3.* ix,
   /opt/fr24_dump1090.py r,
+  /opt/airport_lookup.py r,
+  /opt/motion_state.py r,
+  /opt/airports.json r,
+  /opt/third_party/airports/** r,
   /opt/dashboard_install.py r,
   /opt/dashboard_integration/** r,
   /homeassistant/custom_components/aircraft_bridge/{,**} rwk,
   /homeassistant/aircraft-bridge/{,**} rwk,
   /opt/swim_tfms.py r,
+  /opt/swim_sfdps.py r,
   /opt/traffic_density.py r,
+  /opt/density_rollups.py r,
+  /opt/density_tiles.py r,
   /opt/density_archive.py r,
   /opt/density_envelopes.py r,
   /usr/lib/python3*/** r,

@@ -4,6 +4,8 @@ Counters are snapshots, not messages. No track interpolation ever enters this st
 Only stdlib dependencies; timestamps and day boundaries are UTC.
 """
 import copy
+from collections import OrderedDict
+from density_rollups import schema as rollup_schema, ensure as ensure_rollup, LEVELS as ROLLUP_LEVELS
 import hashlib
 import json
 import math
@@ -180,6 +182,8 @@ class DensityStore:
         self.last_error = None
         self.last_query = None
         self.query_cache = {}
+        self.tile_cache = OrderedDict()
+        self.tile_cache_bytes = 0
         self.skipped_positions = 0
         self.directory.mkdir(parents=True, exist_ok=True)
         identity = self.directory / 'identity.json'
@@ -218,6 +222,7 @@ class DensityStore:
                     db.executemany('INSERT INTO metadata VALUES (?,?)',[('schema_version','1'),('base_zoom',str(BASE_ZOOM))])
                     db.commit()
                 db.executescript(SPATIAL_SCHEMA)
+                db.executescript(rollup_schema())
                 # One-time index backfill for existing history; counters are untouched.
                 db.execute("INSERT OR IGNORE INTO cell_locations SELECT DISTINCT cell,CAST(substr(cell,4,instr(substr(cell,4),'/')-1) AS INTEGER),CAST(substr(cell,4+instr(substr(cell,4),'/')) AS INTEGER) FROM daily WHERE cell NOT IN (SELECT cell FROM cell_locations)")
                 db.commit()
@@ -236,6 +241,10 @@ class DensityStore:
                     db = self.connections.pop(path.stem,None)
                     if db:
                         db.close()
+                    self.query_cache.clear()
+                    self.tile_cache.clear()
+                    self.tile_cache_bytes = 0
+                    self.restore_epoch += 1
                     path.unlink()
                     for suffix in ('-journal','-wal','-shm'):
                         Path(str(path)+suffix).unlink(missing_ok=True)
@@ -306,9 +315,13 @@ class DensityStore:
                     db.execute('DELETE FROM daily')
                     db.execute('DELETE FROM origins')
                     db.execute('DELETE FROM cell_locations')
+                    for table in ('density_rollups','density_rollup_locations','density_rollup_ready','density_rollup_dirty'):
+                        db.execute('DELETE FROM '+table)
                 db.execute('VACUUM')
             self.tracks.clear()
             self.query_cache.clear()
+            self.tile_cache.clear()
+            self.tile_cache_bytes = 0
             self.restore_epoch += 1
             self.last_query = None
             self.last_error = None
@@ -339,8 +352,10 @@ class DensityStore:
                     'retention_months':RETENTION_MONTHS,'source_type':self.source_type,'exported_at':self.clock(),
                     'months':{path.stem:self._records(path.stem) for path in sorted(self.directory.glob('????-??.dat')) if month is None or path.stem == month}}
 
-    def query(self, start=None, end=None, zoom=BASE_ZOOM, bbox=None, bands="all", max_cells=None):
+    def query(self, start=None, end=None, zoom=BASE_ZOOM, bbox=None, bands="all", max_cells=None, bypass_cache=False):
         started = time.perf_counter()
+        if type(bypass_cache) is not bool:
+            raise ValueError("bypass_cache must be boolean")
         selection = selected_bands(bands)
         if max_cells is not None and not 1 <= max_cells <= 10000:
             raise ValueError("max_cells must be 1–10000")
@@ -355,20 +370,35 @@ class DensityStore:
                 raise ValueError('bbox must be west,south,east,north without dateline wrap')
         cells = {}
         rows_read = 0
+        preparation_seconds = sql_seconds = aggregation_seconds = 0.0
+        monthly_queries = []
         lock_started = time.perf_counter()
         with self.lock:
             lock_wait = time.perf_counter() - lock_started
+            preparation_started = time.perf_counter()
             self.prune()
+            preparation_seconds += time.perf_counter()-preparation_started
             cache_key=(start.isoformat(),end.isoformat(),zoom,tuple(bbox) if bbox else None,self.restore_epoch)
             cached=self.query_cache.get(cache_key)
-            cache_hit=bool(max_cells is not None and cached and time.monotonic()-cached[0]<30)
+            cache_hit=bool(not bypass_cache and max_cells is not None and cached and time.monotonic()-cached[0]<30)
             if cache_hit:
                 cells=copy.deepcopy(cached[1])
             for path in ([] if cache_hit else sorted(self.directory.glob('????-??.dat'))):
                 if not start.isoformat()[:7] <= path.stem <= end.isoformat()[:7]:
                     continue
+                preparation_started = time.perf_counter()
                 db = self._db(path.stem)
-                shift = BASE_ZOOM - zoom
+                preparation_seconds += time.perf_counter()-preparation_started
+                month_rows = 0
+                month_sql = month_aggregation = 0.0
+                storage_zoom = BASE_ZOOM
+                rebuild = {'rebuilt_days':0,'seconds':0.0}
+                if getattr(self, '_rollups_enabled', True) and zoom <= max(ROLLUP_LEVELS):
+                    storage_zoom = next(z for z in ROLLUP_LEVELS if z >= zoom)
+                    preparation_started = time.perf_counter()
+                    rebuild = ensure_rollup(db,storage_zoom,start.isoformat(),end.isoformat(),path.stem)
+                    preparation_seconds += time.perf_counter()-preparation_started
+                shift = storage_zoom - zoom
                 n = 1 << zoom
                 if bbox:
                     # Include all children of display cells intersecting the viewport,
@@ -378,26 +408,87 @@ class DensityStore:
                     ymin = max(0,math.ceil((90-bbox[3])/180*n)-1) << shift
                     ymax = min(n-1,math.floor((90-bbox[1])/180*n)) << shift | ((1<<shift)-1)
                 else:
-                    xmin=ymin=0; xmax=ymax=(1<<BASE_ZOOM)-1
-                for row in db.execute('''SELECT ? || "/" || ((CAST(substr(d.cell,4,instr(substr(d.cell,4),'/')-1) AS INTEGER)) >> ?) || "/" || ((CAST(substr(d.cell,4+instr(substr(d.cell,4),'/')) AS INTEGER)) >> ?) AS cell,
+                    xmin=ymin=0; xmax=ymax=(1<<storage_zoom)-1
+                # Spatial view: choose eligible base cells before reading daily rows.
+                # CROSS JOIN keeps SQLite from reversing this measured viewport plan.
+                # No bbox: retain date-first filtering for full-window exports.
+                if bbox:
+                    query_strategy = 'viewport_first_numeric'
+                    join = 'cell_locations l INDEXED BY cell_locations_xy CROSS JOIN daily d INDEXED BY sqlite_autoindex_daily_1'
+                else:
+                    query_strategy = 'date_first_numeric'
+                    join = 'daily d JOIN cell_locations l ON l.cell=d.cell'
+                if storage_zoom != BASE_ZOOM:
+                    query_strategy = 'parent_daily_viewport' if bbox else 'parent_daily_window'
+                    join = 'density_rollup_locations l INDEXED BY density_rollup_xy CROSS JOIN density_rollups d INDEXED BY sqlite_autoindex_density_rollups_1'
+                sql = '''SELECT ? || "/" || (l.x >> ?) || "/" || (l.y >> ?) AS cell,
                     sum(observation_count) AS observation_count, sum(passage_count) AS passage_count,
                     sum(below_1200_ft) AS below_1200_ft, sum("1200_to_17999_ft") AS "1200_to_17999_ft",
                     sum("18000_ft_and_above") AS "18000_ft_and_above", sum(unknown) AS unknown,
                     min(min_ft) AS min_ft, max(max_ft) AS max_ft,
                     min(first_observed) AS first_observed, max(last_observed) AS last_observed,
                     min(history_complete) AS history_complete
-                    FROM daily d JOIN cell_locations l ON l.cell=d.cell WHERE day BETWEEN ? AND ? AND l.x BETWEEN ? AND ? AND l.y BETWEEN ? AND ? GROUP BY (CAST(substr(d.cell,4,instr(substr(d.cell,4),'/')-1) AS INTEGER) >> ?), (CAST(substr(d.cell,4+instr(substr(d.cell,4),'/')) AS INTEGER) >> ?)''',(zoom,shift,shift,start.isoformat(),end.isoformat(),xmin,xmax,ymin,ymax,shift,shift)):
-                    rows_read += 1
-                    key = parent(row['cell'],zoom)
-                    if bbox:
-                        ring=polygon(key)
-                        if ring[1][0]<bbox[0] or ring[0][0]>bbox[2] or ring[0][1]>bbox[3] or ring[2][1]<bbox[1]:
-                            continue
-                    combine(cells.setdefault(key,empty()),row)
+                    FROM '''+join+''' WHERE l.cell=d.cell AND day BETWEEN ? AND ? AND l.x BETWEEN ? AND ? AND l.y BETWEEN ? AND ?
+                    GROUP BY (l.x >> ?), (l.y >> ?)'''
+                if storage_zoom != BASE_ZOOM:
+                    sql = sql.replace('WHERE l.cell=d.cell', 'WHERE l.zoom='+str(storage_zoom)+' AND l.cell=d.cell')
+                params = (zoom,shift,shift,start.isoformat(),end.isoformat(),xmin,xmax,ymin,ymax,shift,shift)
+                query_plan = []
+                diagnostic_metadata = {}
+                verbose = getattr(self, 'verbose_logging', False)
+                if verbose:
+                    query_plan = [str(r[3])[:300] for r in db.execute('EXPLAIN QUERY PLAN '+sql, params).fetchall()[:32]]
+                    diagnostic_metadata = {'sqlite_version':sqlite3.sqlite_version,
+                        'page_count':db.execute('PRAGMA page_count').fetchone()[0],
+                        'page_size':db.execute('PRAGMA page_size').fetchone()[0],
+                        'cache_size':db.execute('PRAGMA cache_size').fetchone()[0],
+                        'temp_store':db.execute('PRAGMA temp_store').fetchone()[0],
+                        'journal_mode':db.execute('PRAGMA journal_mode').fetchone()[0]}
+                vm_callbacks = [0]
+                def progress():
+                    vm_callbacks[0] += 1
+                    return 0
+                if verbose:
+                    db.set_progress_handler(progress,10000)
+                try:
+                    cpu_started = time.thread_time()
+                    sql_started = time.perf_counter()
+                    cursor = db.execute(sql,params)
+                    month_sql += time.perf_counter()-sql_started
+                    while True:
+                        sql_started = time.perf_counter()
+                        row = cursor.fetchone()
+                        month_sql += time.perf_counter()-sql_started
+                        if row is None:
+                            break
+                        aggregate_started = time.perf_counter()
+                        month_rows += 1
+                        rows_read += 1
+                        key = parent(row['cell'],zoom)
+                        if bbox:
+                            ring=polygon(key)
+                            if ring[1][0]<bbox[0] or ring[0][0]>bbox[2] or ring[0][1]>bbox[3] or ring[2][1]<bbox[1]:
+                                month_aggregation += time.perf_counter()-aggregate_started
+                                continue
+                        combine(cells.setdefault(key,empty()),row)
+                        month_aggregation += time.perf_counter()-aggregate_started
+                    cursor.close()
+                finally:
+                    if verbose:
+                        db.set_progress_handler(None,0)
+                sql_seconds += month_sql
+                aggregation_seconds += month_aggregation
+                month_diagnostics = {'month':path.stem, 'query_strategy':query_strategy, 'storage_zoom':storage_zoom, 'parent_rebuild':rebuild, 'sql_seconds':round(month_sql,4), 'aggregation_seconds':round(month_aggregation,4), 'aggregate_rows_returned':month_rows}
+                if verbose:
+                    month_diagnostics.update(query_plan=query_plan, database=diagnostic_metadata,
+                        vm_steps_approx=vm_callbacks[0]*10000,
+                        execution_thread_cpu_seconds=round(time.thread_time()-cpu_started,4))
+                monthly_queries.append(month_diagnostics)
             if max_cells is not None and not cache_hit and len(cells)<=20000:
                 if len(self.query_cache)>=4:
                     self.query_cache.pop(next(iter(self.query_cache)))
                 self.query_cache[cache_key]=(time.monotonic(),copy.deepcopy(cells))
+        display_started = time.perf_counter()
         # Bound interactive geometry by merging observed children only. Never discard
         # counters or manufacture density in unobserved base cells.
         if max_cells is not None:
@@ -408,12 +499,21 @@ class DensityStore:
                 for key,value in cells.items():
                     combine(merged.setdefault(parent(key,zoom),empty()),value)
                 cells = merged
-        diagnostics = {'cached':cache_hit,'query_seconds':round(time.perf_counter()-started,3),
+        diagnostics = {'cached':cache_hit,'cache_bypassed':bypass_cache,'query_seconds':round(time.perf_counter()-started,3),
                        'lock_wait_seconds':round(lock_wait,3),'aggregated_rows_read':rows_read,
                        'returned_cells':len(cells),'requested_zoom':requested_zoom,
-                       'display_zoom':zoom}
+                       'display_zoom':zoom,
+                       'preparation_seconds':round(preparation_seconds,4),
+                       'sql_seconds':round(sql_seconds,4),
+                       'aggregation_seconds':round(aggregation_seconds,4),
+                       'display_aggregation_seconds':round(time.perf_counter()-display_started,4),
+                       'monthly_queries':monthly_queries}
         self.last_query = diagnostics
-        print('[INFO] Density query '+json.dumps(diagnostics),flush=True)
+        basic = {k:diagnostics[k] for k in ('cached','query_seconds','lock_wait_seconds','aggregated_rows_read','returned_cells','requested_zoom','display_zoom')}
+        if not getattr(self, '_tile_query_context', False):
+            print('[INFO] Density query '+json.dumps(basic),flush=True)
+            if getattr(self, 'verbose_logging', False):
+                print('[DEBUG] Density diagnostics '+json.dumps(diagnostics),flush=True)
         return {'schema_version':1,'base_zoom':BASE_ZOOM,'display_zoom':zoom,
                 'diagnostics':diagnostics,
                 'start':start.isoformat(),'end':end.isoformat(),'day_timezone':'UTC',
@@ -423,9 +523,24 @@ class DensityStore:
                          for key,value in sorted(cells.items()) if selected_count(value,selection)>0]}
 
     def geojson(self, **kwargs):
+        started = time.perf_counter()
         payload = self.query(**kwargs)
-        return {'type':'FeatureCollection','source_type':self.source_type,**({'diagnostics':payload['diagnostics']} if kwargs.get('max_cells') is not None else {}),'window':{key:payload[key] for key in ('start','end','day_timezone','display_zoom','selected_bands')},
+        geometry_started = time.perf_counter()
+        result = {'type':'FeatureCollection','source_type':self.source_type,**({'diagnostics':payload['diagnostics']} if kwargs.get('max_cells') is not None else {}),'window':{key:payload[key] for key in ('start','end','day_timezone','display_zoom','selected_bands')},
                 'features':[{'type':'Feature','geometry':{'type':'Polygon','coordinates':[polygon(cell['cell_id'])]},'properties':cell} for cell in payload['cells']]}
+        payload['diagnostics']['geometry_seconds'] = round(time.perf_counter()-geometry_started,4)
+        payload['diagnostics']['geojson_seconds'] = round(time.perf_counter()-started,4)
+        if getattr(self, 'verbose_logging', False):
+            print('[DEBUG] Density geometry '+json.dumps({'geometry_seconds':payload['diagnostics']['geometry_seconds'], 'geojson_seconds':payload['diagnostics']['geojson_seconds'], 'features':len(result['features'])}),flush=True)
+        return result
+
+    def cache_status(self, **kwargs):
+        from density_tiles import cache_status
+        return cache_status(self, **kwargs)
+
+    def view(self, **kwargs):
+        from density_tiles import view
+        return view(self, **kwargs)
 
     def status(self):
         with self.lock:
@@ -433,6 +548,8 @@ class DensityStore:
             return {'available':True,'source_type':self.source_type,'base_zoom':BASE_ZOOM,'retention_months':RETENTION_MONTHS,
                     'months':sorted(self.connections),'bytes_on_disk':sum(p.stat().st_size for p in self.directory.glob('*.dat*')),
                     'skipped_positions':self.skipped_positions,'last_error':self.last_error,'last_query':self.last_query,
+                    'tile_cache':{'entries':len(self.tile_cache),'serialized_bytes':self.tile_cache_bytes,'ttl_seconds':7200,'limit_bytes':33554432},
+                    'parent_zooms':list(ROLLUP_LEVELS),
                     'snapshot_interval':'selected source update cycle','passage_grace_seconds':PASSAGE_GRACE_SECONDS}
 
     @staticmethod
@@ -515,6 +632,8 @@ class DensityStore:
         counts={'added':0,'replaced':0,'retained':0,'ignored_months':ignored_months}
         with self.lock:
             self.query_cache.clear()
+            self.tile_cache.clear()
+            self.tile_cache_bytes = 0
             self.prune()
             self.flush(True)
             for month,cells in months:

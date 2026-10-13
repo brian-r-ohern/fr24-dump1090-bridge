@@ -131,7 +131,7 @@ class DashboardInstallTests(unittest.TestCase):
         hass = type('Hass', (), {'data': {'lovelace': type('Lovelace', (), {'resources': resources})()},
                                'http': HTTP(), 'config_entries': Entries()})()
         namespace = {'asyncio': asyncio, 'timedelta': timedelta, 'Path': Path, '__file__': str(APP / 'dashboard_integration/__init__.py'),
-                     'DOMAIN': 'aircraft_bridge', 'VERSION': '0.6.9.3', 'LOVELACE_DATA': 'lovelace', '_LOGGER': logging.getLogger(__name__),
+                     'DOMAIN': 'aircraft_bridge', 'VERSION': '0.7.0-dev.13', 'LOVELACE_DATA': 'lovelace', '_LOGGER': logging.getLogger(__name__),
                      'DataUpdateCoordinator': Coordinator, 'async_get_clientsession': lambda _: Session(),
                      'add_extra_js_url': lambda _, url: scripts.append(url), 'StaticPathConfig': lambda *args: args}
         tree = ast.parse((APP / 'dashboard_integration/__init__.py').read_text())
@@ -147,7 +147,7 @@ class DashboardInstallTests(unittest.TestCase):
         self.assertEqual(len(routes), 1)
         self.assertEqual(scripts, [])
         self.assertEqual(resources.items[0], unrelated)
-        self.assertEqual(resources.items[1]['url'], '/aircraft_bridge/aircraft-bridge-card.js?v=0.6.9.3')
+        self.assertEqual(resources.items[1]['url'], '/aircraft_bridge/aircraft-bridge-card.js?v=0.7.0-dev.13')
         self.assertEqual(len(resources.writes), 1)
         self.assertEqual(requests, ['http://local-fr24-dump1090:8085/status', 'http://e8a948e6-fr24-dump1090:8085/status'])
         self.assertNotIn('local', hass.data['aircraft_bridge'])
@@ -159,7 +159,7 @@ class DashboardInstallTests(unittest.TestCase):
         class HTTP:
             async def async_register_static_paths(self, paths): routes.extend(paths)
         namespace = {'Path': Path, '__file__': str(APP / 'dashboard_integration/__init__.py'),
-                     'VERSION': '0.6.9.3', 'LOVELACE_DATA': 'lovelace',
+                     'VERSION': '0.7.0-dev.13', 'LOVELACE_DATA': 'lovelace',
                      'add_extra_js_url': lambda _, url: scripts.append(url), 'StaticPathConfig': lambda *args: args}
         tree = ast.parse((APP / 'dashboard_integration/__init__.py').read_text())
         tree.body = [node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == 'register_card']
@@ -178,7 +178,7 @@ class DashboardInstallTests(unittest.TestCase):
             async def async_get_info(self): return {'resources': 1}
         lovelace.resources = YAML()
         asyncio.run(namespace['register_card'](hass))
-        self.assertEqual(scripts, ['/aircraft_bridge/aircraft-bridge-card.js?v=0.6.9.3'])
+        self.assertEqual(scripts, ['/aircraft_bridge/aircraft-bridge-card.js?v=0.7.0-dev.13'])
 
 
 if __name__ == '__main__':

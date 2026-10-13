@@ -1,0 +1,11 @@
+{
+  "environment": "development Python 3.12; synthetic straight flight, not HAOS",
+  "memory_tracks": 40,
+  "memory_retained_samples": 4840,
+  "traced_current_bytes": 1924304,
+  "traced_peak_bytes": 1928095,
+  "compute_batch_aircraft": 500,
+  "warm_analysis_batch_seconds": 0.1071,
+  "max_batch_seconds": 0.1271,
+  "notes": "Only Python-traced allocations, not process RSS. Timings are observations, not performance guarantees."
+}

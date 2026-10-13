@@ -1,3 +1,3 @@
 """Aircraft Bridge integration constants."""
 DOMAIN = 'aircraft_bridge'
-VERSION = '0.6.9.3'
+VERSION = '0.7.0-dev.13'

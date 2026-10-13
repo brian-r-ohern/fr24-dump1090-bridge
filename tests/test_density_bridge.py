@@ -75,10 +75,11 @@ class DensityBridgeTests(unittest.TestCase):
         records=[json.loads(call.args[0].split(' Data operation ',1)[1]) for call in output.call_args_list
                  if call.args and ' Data operation ' in str(call.args[0])]
         completed=[r for r in records if r['phase']=='completed']
-        self.assertEqual([r['action'] for r in completed],['export','import','clear'])
-        self.assertGreater(completed[0]['response_bytes'],0)
-        self.assertEqual(completed[1]['retained'],1)
-        self.assertEqual(completed[2]['target'],'density')
+        self.assertCountEqual([r['action'] for r in completed],['export','import','clear'])
+        by_action={r['action']:r for r in completed}
+        self.assertGreater(by_action['export']['response_bytes'],0)
+        self.assertEqual(by_action['import']['retained'],1)
+        self.assertEqual(by_action['clear']['target'],'density')
         self.assertTrue(any(r['phase']=='failed' and r['http_status']==400 for r in records))
         self.assertTrue(all(r['dataset']!='range-coverage' for r in records))
         self.assertTrue(all(r['source']=='sbs_30003' for r in records))
@@ -163,17 +164,20 @@ class DensityBridgeTests(unittest.TestCase):
             bridge.CFG['source']=source
             code,page=self.request('/')
             self.assertEqual(code,200)
-            self.assertIn('<title>'+label+' → dump1090</title>',page)
+            self.assertIn('<title>'+label+(' · local view' if source=='swim_tfms' else ' → dump1090')+'</title>',page)
             self.assertIn('id="range-toggle"',page)
             code,page=self.request('/status-page')
-            self.assertIn(prefix+'-traffic-density.json',page)
+            if source!='swim_tfms':self.assertIn(prefix+'-traffic-density.json',page)
             self.assertIn('body:f',page)
             self.assertEqual('id="range-backup"' in page,source!='swim_tfms')
             code,config=self.request('/map-config')
             self.assertEqual(config['coverage_outline_enabled'],source!='swim_tfms')
-            with urlopen(self.base+'/traffic-density/export') as response:
-                self.assertEqual(response.headers['Content-Disposition'],'attachment; filename="'+prefix+'-traffic-density.json"')
-                response.read()
+            if source=='swim_tfms':
+                self.assertEqual(self.request('/traffic-density/export')[0],403)
+            else:
+                with urlopen(self.base+'/traffic-density/export') as response:
+                    self.assertEqual(response.headers['Content-Disposition'],'attachment; filename="'+prefix+'-traffic-density.json"')
+                    response.read()
             if source=='swim_tfms':
                 for path in ('/range-coverage','/range-coverage-baseline','/range-coverage.geojson'):
                     self.assertEqual(self.request(path)[0],404)

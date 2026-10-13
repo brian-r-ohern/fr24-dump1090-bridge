@@ -1,0 +1,29 @@
+{
+  "synthetic": true,
+  "sqlite_version": "3.53.1",
+  "base_cells": 50000,
+  "daily_records": 350000,
+  "baseline_seconds": 0.384,
+  "first_parent_query_seconds": 0.617,
+  "warm_parent_query_seconds": 0.001,
+  "first_tile_view_seconds": 0.001,
+  "cached_tile_view_seconds": 0.0,
+  "parent_plan": [
+    "SEARCH l USING COVERING INDEX density_rollup_xy (zoom=? AND x>? AND x<?)",
+    "SEARCH d USING INDEX sqlite_autoindex_density_rollups_1 (cell=? AND day>? AND day<?)",
+    "USE TEMP B-TREE FOR GROUP BY"
+  ],
+  "returned_cells": 18,
+  "cached_tile_hits": 1,
+  "limitations": "Synthetic local history, sequential warm-cache measurements; not HAOS predictions. First query includes lazy backfill.",
+  "collection_benchmark": {
+    "dev7": {
+      "100_cycles_100_aircraft_seconds": 0.0625,
+      "mean_cycle_ms": 0.625
+    },
+    "dev8": {
+      "100_cycles_100_aircraft_seconds": 0.2442,
+      "mean_cycle_ms": 2.442
+    }
+  }
+}

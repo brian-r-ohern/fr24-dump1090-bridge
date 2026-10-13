@@ -1,6 +1,7 @@
 """Shared feed configuration validation, also used before recovery startup."""
 from urllib.parse import urlsplit
-VALID_SOURCES = ("sbs_30003", "flights_js", "aircraft_json", "swim_tfms")
+import re
+VALID_SOURCES = ("sbs_30003", "flights_js", "aircraft_json", "swim_tfms", "swim_sfdps")
 
 def validate_options(cfg):
     if not isinstance(cfg, dict):
@@ -25,14 +26,27 @@ def validate_options(cfg):
     swim_username = str(cfg.get("swim_username", "")).strip()
     swim_password = str(cfg.get("swim_password", ""))
     swim_queue = str(cfg.get("swim_queue", "")).strip()
-    if source == "swim_tfms":
+    if source in ("swim_tfms", "swim_sfdps"):
         missing = [name for name, value in (("swim_host", swim_host), ("swim_vpn", swim_vpn),
                   ("swim_username", swim_username), ("swim_password", swim_password), ("swim_queue", swim_queue)) if not value]
         if missing:
-            raise ValueError("swim_tfms source requires: " + ", ".join(missing))
+            raise ValueError(source + " source requires: " + ", ".join(missing))
     if cfg.get("enrichment_source", "adsb_tracker") not in ("adsb_tracker", "none"):
         raise ValueError("enrichment_source must be adsb_tracker or none")
+    tracker_entities = {}
+    for key, default in {'tracker_aircraft_entity': 'sensor.adsb_all_aircraft', 'tracker_closest_entity': 'sensor.adsb_closest_aircraft', 'tracker_military_entity': 'sensor.adsb_military_aircraft_details'}.items():
+        entity = str(cfg.get(key, default)).strip() or default
+        if not re.fullmatch(r'sensor\.[a-z0-9_]+', entity):
+            raise ValueError('Invalid Tracker sensor entity: ' + key)
+        tracker_entities[key] = entity
+    if type(cfg.get("verbose_logging", False)) is not bool:
+        raise ValueError("verbose_logging must be boolean")
+    if cfg.get("map_theme", "auto") not in ("auto", "light", "dark"):
+        raise ValueError("map_theme must be auto, light or dark")
     return {
+        "map_theme": cfg.get("map_theme", "auto"),
+        "verbose_logging": cfg.get("verbose_logging", False),
+        **tracker_entities,
         "source": source,
         "density_legacy_source": cfg.get("density_legacy_source", "unassigned"),
         "receiver_host": receiver_host,
@@ -47,7 +61,7 @@ def validate_options(cfg):
         "destination_airport": str(cfg.get("destination_airport", "")).strip().upper(),
         "enrichment_source": str(cfg.get("enrichment_source", "adsb_tracker")).strip().lower() or "adsb_tracker",
         "history_url": str(cfg.get("history_url", "")).strip().rstrip("/"),
-        "swim_product": str(cfg.get("swim_product", "tfms")).strip().lower() or "tfms",
+        "swim_product": "sfdps" if source == "swim_sfdps" else "tfms",
         "swim_host": swim_host,
         "swim_vpn": swim_vpn,
         "swim_username": swim_username,

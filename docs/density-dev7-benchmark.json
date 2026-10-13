@@ -1,0 +1,51 @@
+{
+  "synthetic": true,
+  "sqlite_version": "3.53.1",
+  "base_cells": 120000,
+  "daily_records": 840000,
+  "results": [
+    {
+      "view": "wide",
+      "zoom": 11,
+      "returned_cells": 40,
+      "baseline_seconds": 1.329,
+      "optimized_seconds": 0.771,
+      "baseline_vm_steps": 71400000,
+      "optimized_vm_steps": 56520000,
+      "new_plan": [
+        "SEARCH l USING INDEX cell_locations_xy (x>? AND x<?)",
+        "SEARCH d USING INDEX sqlite_autoindex_daily_1 (cell=? AND day>? AND day<?)",
+        "USE TEMP B-TREE FOR GROUP BY"
+      ]
+    },
+    {
+      "view": "medium",
+      "zoom": 15,
+      "returned_cells": 144,
+      "baseline_seconds": 0.445,
+      "optimized_seconds": 0.014,
+      "baseline_vm_steps": 8640000,
+      "optimized_vm_steps": 1130000,
+      "new_plan": [
+        "SEARCH l USING INDEX cell_locations_xy (x>? AND x<?)",
+        "SEARCH d USING INDEX sqlite_autoindex_daily_1 (cell=? AND day>? AND day<?)",
+        "USE TEMP B-TREE FOR GROUP BY"
+      ]
+    },
+    {
+      "view": "close",
+      "zoom": 17,
+      "returned_cells": 144,
+      "baseline_seconds": 0.451,
+      "optimized_seconds": 0.003,
+      "baseline_vm_steps": 7390000,
+      "optimized_vm_steps": 80000,
+      "new_plan": [
+        "SEARCH l USING INDEX cell_locations_xy (x>? AND x<?)",
+        "SEARCH d USING INDEX sqlite_autoindex_daily_1 (cell=? AND day>? AND day<?)",
+        "USE TEMP B-TREE FOR GROUP BY"
+      ]
+    }
+  ],
+  "limitations": "Synthetic grid, local runtime, baseline then optimized (warm caches); not a prediction for HAOS production data."
+}

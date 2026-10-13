@@ -1,5 +1,5 @@
 name: "FR24 dump1090 Bridge"
-version: "0.6.9.3"
+version: "0.7.0-dev.13"
 slug: "fr24_dump1090"
 description: >-
   Normalizes a selected local aircraft data source into
@@ -27,6 +27,8 @@ ports:
 ports_description:
   8085/tcp: "FR24 dump1090 bridge HTTP service (optional LAN exposure)"
 options:
+  map_theme: "auto"
+  verbose_logging: false
   dashboard_integration: false
   source: "sbs_30003"
   receiver_host: ""
@@ -47,6 +49,9 @@ options:
   request_timeout: 3
   aircraft_json_poll_interval: 1
   enrichment_source: "adsb_tracker"
+  tracker_aircraft_entity: "sensor.adsb_all_aircraft"
+  tracker_closest_entity: "sensor.adsb_closest_aircraft"
+  tracker_military_entity: "sensor.adsb_military_aircraft_details"
   swim_product: "tfms"
   swim_radius_nm: 250
   swim_aircraft_timeout: 120
@@ -54,8 +59,10 @@ options:
   swim_retry_interval_ms: 3000
 
 schema:
+  map_theme: "list(auto|light|dark)?"
+  verbose_logging: bool?
   dashboard_integration: bool?
-  source: "list(sbs_30003|flights_js|aircraft_json|swim_tfms)"
+  source: "list(sbs_30003|flights_js|aircraft_json|swim_tfms|swim_sfdps)"
   density_legacy_source: "list(unassigned|sbs_30003|flights_js|aircraft_json|swim_tfms)?"
   receiver_host: str?
   sbs_port: port?
@@ -67,7 +74,10 @@ schema:
   aircraft_json_url: str?
   aircraft_json_poll_interval: "int(1,60)?"
   enrichment_source: "list(adsb_tracker|none)"
-  swim_product: "list(tfms)?"
+  tracker_aircraft_entity: str?
+  tracker_closest_entity: str?
+  tracker_military_entity: str?
+  swim_product: "list(tfms|sfdps)?"
   swim_host: str?
   swim_vpn: str?
   swim_username: str?

@@ -1,0 +1,20 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const html=fs.readFileSync(process.argv[2],'utf8'),start=html.indexOf('function modeledArrival('),end=html.indexOf('function destinationEstimateHtml',start);
+const ctx=vm.createContext({Math,Number,String,Object,Date,inputSource:'sbs_30003',bearing:()=>90,esc:String,currentMotionState:()=>null});
+vm.runInContext(html.slice(start,end),ctx);
+const ac={hex:'x',lat:42,lon:-77,gs:400,seen_pos:1,alt_baro:30000},t={aircraft_type:'B738'},estimate={distanceNm:200,airport:{lat:42,lon:-73,elevation_ft:500}},state={quality:'supported',metrics:{altitude_reference:'alt_baro',course_degrees:90,vertical_rate_fpm:0,turn_rate_deg_s:0},speed_diagnostics:{reported_speed_knots:400}};
+ctx.ac=ac;ctx.t=t;ctx.estimate=estimate;ctx.state=state;
+const run=()=>vm.runInContext('modeledArrival(ac,t,estimate,state)',ctx);
+let result=run();assert(result.available);assert(result.minimumMinutes>200/400*60);assert(result.maximumMinutes>=result.minimumMinutes);
+for(const scenario of result.scenarios){const distance=scenario.phases.reduce((s,p)=>s+p.distance_nm,0)+scenario.cruise_minutes/60*400;assert(Math.abs(distance-200)<1e-8);assert(Math.abs(scenario.phases.reduce((s,p)=>s+p.height_loss_ft,0)-29500)<1e-8)}
+t.aircraft_type='B77W';assert(run().available);t.aircraft_type='E75L';assert(run().available);t.aircraft_type='B738';
+estimate.distanceNm=10;assert(!run().available);assert(run().extraDistanceNm>0);
+estimate.distanceNm=200;t.aircraft_type='C172';assert(run().reason.includes('unsupported'));t.aircraft_type='B738';
+for(const change of [{seen_pos:100},{alt_baro:null}]){ctx.ac={...ac,...change};assert(!run().available)}ctx.ac=ac;
+estimate.airport.elevation_ft=null;assert(!run().available);estimate.airport.elevation_ft=500;
+state.metrics.course_degrees=270;assert(run().reason.includes('inbound'));state.metrics.course_degrees=90;
+state.metrics.vertical_rate_fpm=1000;assert(run().reason.includes('climbing'));state.metrics.vertical_rate_fpm=0;
+state.metrics.turn_rate_deg_s=1;assert(run().reason.includes('turning'));state.metrics.turn_rate_deg_s=0;
+state.speed_diagnostics.reported_speed_knots=null;assert(!run().available);state.speed_diagnostics.reported_speed_knots=400;
+ctx.inputSource='swim_sfdps';ac.seen_pos=20;assert(run().available);ctx.inputSource='sbs_30003';assert(!run().available);
+console.log('PASS coupled distance/altitude scenarios, slower modeled arrival, high airport elevation, unsupported profiles, stale/missing inputs, inbound/climb/turn gates, SFDPS freshness and infeasible direct path');

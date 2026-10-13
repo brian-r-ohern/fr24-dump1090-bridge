@@ -23,5 +23,10 @@
   "swim_aircraft_timeout": 120,
   "swim_retry_count": 3,
   "swim_retry_interval_ms": 3000,
-  "dashboard_integration": false
+  "dashboard_integration": false,
+  "tracker_aircraft_entity": "sensor.adsb_all_aircraft",
+  "tracker_closest_entity": "sensor.adsb_closest_aircraft",
+  "tracker_military_entity": "sensor.adsb_military_aircraft_details",
+  "verbose_logging": false,
+  "map_theme": "auto"
 }

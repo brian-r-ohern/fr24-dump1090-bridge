@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 
 from bridge_config import validate_options
 
-VERSION = '0.6.9.1'
+VERSION = '0.7.0-dev.13'
 TOKEN = secrets.token_urlsafe(32)
 LOCK = threading.RLock()
 LIMIT = 65536
@@ -53,7 +53,7 @@ def checked_options(options):
     for key, (minimum, maximum) in limits.items():
         if not minimum <= merged[key] <= maximum:
             raise ValueError('Invalid settings field: ' + key)
-    if merged['density_legacy_source'] not in ('unassigned', 'sbs_30003', 'flights_js', 'aircraft_json', 'swim_tfms') or merged['swim_product'] != 'tfms':
+    if merged['density_legacy_source'] not in ('unassigned', 'sbs_30003', 'flights_js', 'aircraft_json', 'swim_tfms') or merged['swim_product'] not in ('tfms', 'sfdps'):
         raise ValueError('Invalid source attribution or SWIM product')
     validate_options(merged)
     return merged

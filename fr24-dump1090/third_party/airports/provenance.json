@@ -1,0 +1,16 @@
+{
+  "source": "datasets/airport-codes, derived from OurAirports",
+  "license": "ODC-PDDL-1.0",
+  "commit": "68f7adaf362cea1d7b03a9a80653dfc338a426d5",
+  "source_updated_utc": "2026-10-12T04:15:06Z",
+  "source_url": "https://raw.githubusercontent.com/datasets/airport-codes/68f7adaf362cea1d7b03a9a80653dfc338a426d5/data/airport-codes.csv",
+  "source_sha256": "27195320172141b52775fb8d58e9c038fe6902191d551842dd5bdc08e8f11e2d",
+  "output_sha256": "280db21259e1e833db90480bd76eaf74c57254ddac279e5ddd873a599bfa1502",
+  "records": 72662,
+  "conversion": "tools/build_airport_lookup.py; omit closed/invalid coordinates; retain identifiers, coordinates, validated elevation_ft and airport_type",
+  "retrieved_utc": "2026-10-12T22:56:15.709021+00:00",
+  "added_fields": [
+    "elevation_ft",
+    "airport_type"
+  ]
+}

@@ -18,10 +18,10 @@ class AircraftBridgeCard extends HTMLElement {
     const state=this._hass.states[this.config.entity], s=state?.attributes || {};
     const unavailable=!state || ['unavailable','unknown'].includes(state.state);
     const e=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    const sourceLabels={sbs_30003:'SBS → dump1090',flights_js:'FR24 HTTP → dump1090',aircraft_json:'ADSB JSON → dump1090',swim_tfms:'FAA TFMS → dump1090'};
+    const sourceLabels={sbs_30003:'SBS → dump1090',flights_js:'FR24 HTTP → dump1090',aircraft_json:'ADSB JSON → dump1090',swim_tfms:'FAA TFMS · local view',swim_sfdps:'FAA SFDPS · local view'};
     const consumers=s.feed_consumers || {}, age=s.last_message_age_seconds??s.last_poll_age_seconds;
     const feedStatus=s.feed_status??state?.state;
-    const sourceNames={sbs_30003:'SBS',flights_js:'FR24 HTTP',aircraft_json:'ADSB JSON',swim_tfms:'TFMS'};
+    const sourceNames={sbs_30003:'SBS',flights_js:'FR24 HTTP',aircraft_json:'ADSB JSON',swim_tfms:'TFMS',swim_sfdps:'SFDPS'};
     const open=this.shadowRoot.querySelector('details')?.open || false;
     this.shadowRoot.innerHTML=`<style>
     ha-card{padding:18px;color:var(--primary-text-color)}header{display:flex;gap:12px;align-items:center}ha-icon{color:var(--primary-color)}h2{margin:0;font-size:21px;font-weight:500}.sub{font-size:13px;color:var(--secondary-text-color);margin-top:5px}table{width:100%;border-collapse:collapse;margin-top:12px}td{padding:6px 0;border-bottom:1px solid var(--divider-color)}td:last-child{text-align:right}nav{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}button{color:var(--primary-color);background:none;border:1px solid var(--divider-color);border-radius:6px;padding:8px;cursor:pointer}details{margin-top:12px}summary{cursor:pointer}p{font-size:13px;color:var(--secondary-text-color)}.ok{color:var(--success-color,#43a047)}.bad{color:var(--error-color,#db4437)}
