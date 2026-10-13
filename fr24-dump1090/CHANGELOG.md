@@ -4,6 +4,16 @@
 
 Promoted **v0.7.0-dev.13** to **v0.7.0** following development and validation of the v0.7.0 feature set. This release consolidates all changes from dev.1 through dev.13.
 
+### Release highlights
+
+- Added FAA SFDPS authorized local-only surveillance viewing; both FAA sources disable aircraft-feed and general data-export endpoints.
+- Added airport lookup, direct ETA, and separately labeled experimental modeled-arrival range for qualifying aircraft.
+- Added motion primitives, activity coloring, filtering, and source-specific diagnostics.
+- Improved traffic density with spatial SQL, rollups, cached tiles, and refresh controls.
+- Added live Auto/Light/Dark map theme selection and expanded regression tests.
+
+Development entries below document the progression; they are not separate stable releases.
+
 ### v0.7.0-dev.13 — Final development build
 
 - Add live Map theme Auto/Light/Dark toolbar selector, applying the palette immediately without restart or reload.
@@ -46,20 +56,20 @@ Promoted **v0.7.0-dev.13** to **v0.7.0** following development and validation of
 - Invalidate caches on restore, clear and retention pruning; keep full backups authoritative.
 - Preserve fine observations, source separation and FAA output restrictions.
 
-# 0.7.0-dev.7
+## 0.7.0-dev.7
 
 - Use existing spatial and cell/date indexes before aggregating viewport density.
 - Group numeric coordinates instead of repeatedly parsing text cell IDs.
 - Add query-strategy diagnostics and baseline SQL equivalence tests.
 - Preserve schema, collection statistics, export formats and source eligibility.
 
-# 0.7.0-dev.6
+## 0.7.0-dev.6
 
 - Add verbose SQLite query plans, page/cache settings, approximate VM instruction counts and query-thread CPU timing.
 - Add explicit density cache bypass for repeatable diagnostics.
 - Preserve counters, datasets, source eligibility, query results and existing index structure.
 
-# 0.7.0-dev.5
+## 0.7.0-dev.5
 
 - Optional bounded verbose motion rejection and density phase timing diagnostics; settings backups retain the toggle.
 - Zoom-dependent 24/36 px aircraft icons with centered anchors.

@@ -1,56 +1,19 @@
 # FR24 dump1090 Bridge — Home Assistant
 
-## v0.7.0-dev.13 — Live map theme selector
+## v0.7.0 operation
 
-Choose **Auto / Light / Dark** from **Map theme** in the map toolbar. The palette changes immediately without an App restart, page reload or density query. Auto continues to follow browser/device preference. Your choice remains active for that open map page, including periodic configuration refreshes. The App's saved `map_theme` setting is the default when opening/reloading a map page; it remains covered by settings backup/recovery.
-
-
-## v0.7.0-dev.12 — Selectable map theme
-
-Set `map_theme` to `auto` (default), `light`, or `dark` in App Configuration. Save and restart the App, then reload the map. Auto follows the browser/device color preference and responds when it changes; it does not read Home Assistant's separately selected frontend theme. Light and dark explicitly choose the basemap palette. Motion/aircraft, density, range and envelope colors remain unchanged. The setting is included in persistent settings backup/recovery; older configurations and snapshots default to auto.
-
-
-## v0.7.0-dev.11 — SFDPS reported speed and modeled arrival preview
-
-SFDPS speed primitives now use fresh **reported ground speed**. Position-derived speed remains visible in diagnostics and is the fallback when reported speed is missing/stale. Course/turns still use observed positions; altitude trends still use observed altitude. Each speed-dependent result records its basis, and the SFDPS popup shows **Motion speed source**. Speed-basis switches close previous speed events rather than merging unlike series. SBS/aircraft.json retain their existing position-derived detection. TFMS remains excluded from motion.
-
-The existing **ETA · current ground speed** stays as a baseline and is now available on SFDPS local views. A separate **Estimated arrival · modeled** range is available for recognizable transport jets with fresh supported inbound motion, fresh reported ground speed, observed altitude provenance, and known airport elevation. It integrates descent and linear slowdown together; it does not add an entire descent duration to overlapping travel time. Expand Arrival assumptions for the two experimental profiles. They are assumed ground-speed scenarios, not indicated-airspeed rules or validated landing forecasts. Unknown types, stale/missing inputs, climbing/turning/outbound aircraft fall back with an explicit reason; short-distance/high-altitude cases report that extra route distance would be needed rather than force an impossible direct scenario.
-
-Airport data now includes validated elevation and airport type from the October 12 pinned public-domain/PDDL snapshot. FAA data outputs remain disabled; arrival estimates are local map presentation only. See `docs/v0.7.0-dev.11-testing.md` and `docs/motion-analytics-engineering.md` for source selection, equations, profiles and limitations.
-
-
-## v0.7.0-dev.10 — Automatic cached views and speed diagnostics
-
-After pan/zoom or altitude changes, a fully cached, fresh density view loads automatically once movement settles. Missing or stale tiles keep **Load density needed** and require a manual load. Automatic requests are cache-only: an expiry or clear between the inventory check and load returns a pending view without starting SQL/rebuild work. **Refresh now** still explicitly forces rebuilding. Density loading on enable is unchanged.
-
-With `verbose_logging` enabled, expand **Speed diagnostics** in an aircraft popup to see position-derived ground speed, reported speed, the latest-leg versus latest-report difference, derived speed min/median/max, range, fit residual, trend, accepted position intervals, and the exact stable-speed blockers. Verbose Motion diagnostics now summarize these values across fresh tracks without recording aircraft identifiers or positions. SBS/aircraft.json reported speed is labeled reported ground speed; SFDPS remains **reported speed (meaning unverified)**. Missing/stale reported fields are omitted from comparisons; unknown field timing is labeled snapshot assumption. These are diagnostic comparisons, not validation that the reported field and derived leg measure the same interval or speed quantity.
-
-Detection thresholds, motion labels, SFDPS local-view isolation and source exclusions are unchanged. See `docs/v0.7.0-dev.10-testing.md` and the motion engineering notes. Repeated geometry remains the next increment, v0.7.1-dev.1.
-
-
-## v0.7.0-dev.9 — Compact density status and SFDPS analytics
-
-Enabling **Traffic Density** loads the selected view automatically. The compact summary shows the window, altitude selection, displayed cell count, oldest tile generation time, and **cached / to build / stale** tile counts. These counts describe the current requested viewport, not the previous request's hits/misses. Pan, zoom or change bands, then use **Load density**; **Refresh now** forces recomputation. The previous layer remains visible until the next load. When the view changes, its cell count/time still describe that displayed layer and the banner marks **Load density needed**. Cache inventory is checked without querying observations or building grids; stale tiles are checked once per minute while density is enabled. Grid resolution, timing and SQL details remain in `/traffic-density/status` and diagnostic logs.
-
-SFDPS now collects source-separated density and supports local motion colors, filters and popup primitives. Density credits eligible reported-position cells in each Bridge publication snapshot, including repeated retained positions; it does not count only distinct FAA reports or fill paths between reports. Motion instead deduplicates actual SFDPS position timestamps and derives ground speed/course from independent positions. Its preview profile uses a 120-second window, at least five samples spanning 60 seconds, and a 45-second gap/freshness limit. Reported altitude retains the label `sfdps_reported_altitude`; its datum is not assumed to be ADS-B barometric altitude. These thresholds require validation against the user's authorized feed.
-
-SFDPS range-bearing collection and density-derived envelopes remain disabled. FAA aircraft, density and per-track motion outputs remain unavailable as general feed/export APIs; SFDPS motion and density are rendered through the local viewer. Safe aggregate status and cache-inventory counters remain available. TFMS remains excluded from motion analytics; coarse `flights.js` positions remain excluded too. Existing source histories are preserved.
-
-
-## Earlier preview: v0.7.0-dev.4 — SFDPS local view and larger aircraft
-
-Aircraft markers are now 36 × 36 px (1.5×), with centered anchors. Select `swim_sfdps` to view authorized FAA SFDPS FIXM surveillance tracks using the existing SWIM connection fields and Home geographic gate. In dev.4, SFDPS had no density, range collection, motion analytics or data exports; existing histories are preserved. Both FAA sources now reject dump1090 aircraft feed URLs and general data exports. Native O/D metadata remains visible. See [dev.4 setup and verification](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.7.0-dev.4-testing.md).
-
+The map offers an immediate **Auto / Light / Dark** theme selector. Destination popups may show a direct-distance/current-ground-speed ETA and, for qualifying aircraft, a separately labeled **experimental** modeled arrival range. Motion classifications and activity coloring depend on source quality; TFMS and coarse `flights.js` reports are excluded. Traffic density uses cached tiles and daily rollups. See the [changelog](CHANGELOG.md) for development history and the `docs/` testing records for validation.
 
 ## Configuration
 
-The bridge supports four mutually exclusive aircraft input sources. Exactly one source is selected at startup.
+The bridge supports five mutually exclusive aircraft input sources. Exactly one source is selected at startup.
 
 - **SBS/BaseStation (`sbs_30003`) — recommended/default for FR24 receivers.** Connects to the receiver's local TCP BaseStation feed, normally on port `30003`. Only the receiver host is required for this mode.
 - **FR24 web feed (`flights_js`) — alternate.** Polls the receiver's authenticated `/flights.js` endpoint. This mode requires the receiver HTTP port, username, and password.
 - **dump1090/readsb JSON (`aircraft_json`) — alternate.** Polls a configured HTTP or HTTPS `aircraft.json` URL. The bridge validates the standard top-level aircraft array, normalizes ICAO `hex` values, preserves supplied aircraft fields, and republishes the selected source through the bridge endpoints.
 
-- **FAA SWIM TFMS (`swim_tfms`) — alternate.** Uses an authorized FAA Solace subscription; requires broker host/port, message VPN, username, password and queue. Positioned tracks are gated around Home Assistant Home. See TFMS behavior below.
+- **FAA SWIM TFMS (`swim_tfms`) — local-view-only.** Uses an authorized FAA Solace subscription; requires broker host/port, message VPN, username, password and queue. Positioned tracks are gated around Home Assistant Home.
+- **FAA SWIM SFDPS (`swim_sfdps`) — local-view-only.** Uses an authorized FAA Solace subscription for FIXM surveillance tracks, with local density and motion display. **Neither FAA source can publish aircraft feeds or general data exports.**
 
 Default operational values:
 
@@ -110,7 +73,7 @@ Home Assistant generates an app's internal DNS name as `{REPO}_{SLUG}`, with und
 
 A GitHub repository installation uses a repository identifier generated by Home Assistant, so its hostname will **not** retain the `local-` prefix. Do not copy the development hostname into a production configuration without checking the installed app's actual network identity.
 
-Consumers can use `/aircraft.json` or `/data/aircraft.json` as required.
+For non-FAA sources, consumers can use `/aircraft.json` or `/data/aircraft.json` as required. Both routes are unavailable for FAA sources.
 
 ## Home Assistant web UI (Ingress)
 
@@ -131,8 +94,8 @@ The app declares container port 8085 with no host mapping by default. If a clien
 ### HTTP endpoint reference
 
 - `/` — Raw ADS-B Map
-- `/aircraft.json` — dump1090/readsb-compatible aircraft feed
-- `/data/aircraft.json` — compatibility alias for the aircraft feed
+- `/aircraft.json` — dump1090/readsb-compatible aircraft feed (non-FAA only)
+- `/data/aircraft.json` — compatibility alias (non-FAA only)
 - `/status` — machine-readable bridge and active-source status
 - `/status-page` — human-readable status page
 - `/health` — bridge process/service health
@@ -230,7 +193,7 @@ The [density schema and sizing notes](https://github.com/brian-r-ohern/fr24-dump
 
 ### FAA SWIM/TFMS density limitations
 
-Traffic Density remains available for FAA SWIM/TFMS, but its spatial detail is limited by the position reports supplied by the feed. Report cadence varies by feed and track; observed examples updated approximately once per minute, leaving gaps between occupied cells even along a continuous flight. This is a sampling interval, not a measured minute of delivery latency: a three-image check of one track was consistent with delivery/display delay of only a few seconds, subject to clock and browser timing. These examples do not establish cadence or latency for every TFMS track. An empty cell therefore means no position was observed there; it does not establish that no aircraft passed through it. In the current implementation, observations count aircraft represented in Bridge publication snapshots, not distinct FAA reports: the Bridge republishes retained TFMS positions once per second, so the same reported position can receive multiple observation credits while it remains eligible. Counts consequently reflect both report availability and snapshot retention, and should not be compared directly with ADS-B feeds as independent position-report counts or interpreted as measured time spent in each cell.
+Traffic Density remains available for FAA SWIM/TFMS, but its spatial detail is limited by the position reports supplied by the feed. Report cadence varies by feed and track; observed examples updated approximately once per minute, leaving gaps between occupied cells even along a continuous flight. This is a sampling interval, not a measured minute of delivery latency: a three-image check of one track was consistent with delivery/display delay of only a few seconds, subject to clock and browser timing. These examples do not establish cadence or latency for every TFMS track. An empty cell therefore means no position was observed there; it does not establish that no aircraft passed through it. Observations count eligible retained positions in local map snapshots, not distinct FAA reports: the same reported position can receive multiple observation credits while it remains eligible. This is local density accounting, not redistribution. Counts consequently reflect both report availability and snapshot retention, and should not be compared directly with ADS-B feeds as independent position-report counts or interpreted as measured time spent in each cell.
 
 The Bridge deliberately does not interpolate between reports or extrapolate beyond the latest report to fill density gaps. Great-circle connections, three-point smoothing and constrained-turn paths can suggest plausible trajectories, but cannot establish which cells an aircraft actually traversed between sparse reports. Filling those cells would turn inferred motion into apparent observations and could introduce false routes or maneuver artifacts, especially during turns, holding patterns or report gaps. Density therefore credits only the reported-position cells represented in eligible snapshots. Any future inferred-track presentation should remain explicitly distinguishable from the observed density dataset.
 
@@ -251,7 +214,7 @@ Page titles, density stores and backup names identify the selected source. The R
 
 ## Altitude heat maps and consistency envelopes
 
-The static sidebar title is Aircraft Bridge. Traffic Density supports Low/Middle/High combinations and All Traffic including Unknown. ADS-B maps offer on-demand dashed density envelopes for consistency comparison at 0.5°; the status page provides custom dates and JSON/GeoJSON exports. FAA exports describe reported traffic extent and do not enable receiver range rings. See [usage and verification notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.6.4-testing.md). Stored altitude counters and backup schema are preserved.
+The static sidebar title is Aircraft Bridge. Traffic Density supports Low/Middle/High combinations and All Traffic including Unknown. ADS-B maps offer on-demand dashed density envelopes for consistency comparison at 0.5°; the status page provides custom dates and JSON/GeoJSON exports. FAA data remains restricted to authorized local viewing; general export endpoints are disabled for FAA sources. See [usage and verification notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.6.4-testing.md). Stored altitude counters and backup schema are preserved.
 
 ## Density refresh and data management
 
@@ -317,79 +280,3 @@ After restoring or clearing data on the status page, reload the map to discard i
 
 Port mappings and Show in sidebar remain outside the settings snapshot. After changing a Network port mapping in Home Assistant, restart the App to apply it.
 
-## Release history
-
-See the [changelog](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/fr24-dump1090/CHANGELOG.md) for the development sequence and earlier releases. The v0.6.0–v0.6.7 entries describe development iterations included in the public v0.6.8 release.
-
-## Dashboard status card and feed dependencies — v0.6.9.3
-
-Enable **Dashboard integration** in the App configuration, save and restart the App. After first installation or a companion integration upgrade, restart **Home Assistant Core**. In **Settings → Devices & services → Add integration**, choose **Aircraft Bridge** and select the App instance. Refresh the browser, edit a dashboard, and choose **Aircraft Bridge** from the card picker. Select its status entity in the visual editor. No manual file copying, YAML editing, REST sensor setup or exposed host port is required. See [dashboard setup and upgrade notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/dashboard/README.md).
-
-The companion integration polls `/status` every ten seconds through the App’s internal hostname. Each local/repository App has a separate entity and Ingress path. The card defaults to a source-aware title and shows feed status, aircraft counts, version and recent dependencies; a custom title is optional. Map/status/settings buttons open the matching Ingress page. Status polling does not count as aircraft-feed consumption.
-
-`/status` includes `feed_consumers`: recent internal/external client groups, a 60-second activity window, last-seen timestamps, mean polling intervals, and identification confidence. The built-in map identifies itself separately; external apps can append a non-sensitive `client_id` to their aircraft-feed URL. Without identifiers, shared gateway/User-Agent clients may collapse into one group, so the count is an estimate. Only successful aircraft-feed responses count; diagnostics do not. Tracking resets on restart. Recent activity helps identify dependencies before stopping or uninstalling, but zero recent consumers does not prove that no application relies on the feed.
-
-The optional installer requires a read/write mount of Home Assistant’s configuration folder. It writes only its managed `custom_components/aircraft_bridge` package and nonsecret instance registrations under `aircraft-bridge/instances`; it does not edit `configuration.yaml` or dashboard storage. Aircraft credentials remain outside these registrations. Settings recovery retains the enable flag. Disabling the option unregisters this App on its next restart; remove the corresponding Devices & services entry if you no longer want it polled. The shared package is retained for other instances. No density/range migration is required.
-
-### v0.6.9.2 dashboard fixes
-
-The integration automatically registers a versioned dashboard module resource while preserving existing resources. Card navigation now supplies Home Assistant’s routing options for all three Ingress buttons. After upgrading, restart the App with Dashboard integration enabled, restart Home Assistant Core, and reload the browser; existing integration entries and cards remain valid. YAML-managed resources use frontend loading without editing YAML.
-
-### v0.6.9.3 App navigation
-
-Card links prefer the registered App sidebar route, such as `/local_fr24_dump1090`, and fall back to `/app/<full-slug>` when Show in sidebar is disabled. Old Ingress paths saved in cards are converted using the registered frontend panels, with compatibility for older HA. After upgrading, restart the App and Home Assistant Core, then reload the browser. Existing integration entries and cards remain valid.
-
-## Destination estimate — v0.8.0 preview
-
-Aircraft popups can show **Direct to destination** distance and **ETA · current ground speed**, including an approximate remaining duration and UTC arrival time. ADS-B destinations come from Tracker enrichment; TFMS uses the feed's arrival airport. The local airport lookup accepts exact identifiers and unambiguous IATA/ICAO aliases.
-
-The estimate divides great-circle distance by the current reported ground speed in knots. It assumes direct flight and constant speed; routing, wind changes, descent, approach and holding can change arrival time substantially. It is an approximate map aid, not a flight-plan or operational ETA. TFMS sparse reports and retained positions also affect freshness. No estimate appears without a known destination, valid position and positive numeric ground speed, or when the aircraft is explicitly on the ground.
-
-Airport coordinates are bundled from the OurAirports-derived `datasets/airport-codes` snapshot updated October 10, 2026, declared under PDDL. The Bridge remains Apache-2.0. See `fr24-dump1090/third_party/airports/` for provenance and regeneration instructions. Lookup is local through `/airport-lookup?codes=SYR,KSYR`; no external airport request is needed. The normalized aircraft feed and stored density/range history are unchanged.
-
-This test build is **0.7.0-dev.1**. The motion/pattern roadmap is recorded in `docs/motion-pattern-roadmap.md`; basic motion primitives are included, while geometric pattern detectors remain future work. See `docs/v0.7.0-eta-testing.md` for validation.
-
-## Motion foundation — v0.7.0-dev.1 preview
-
-SBS and standard `aircraft.json` sources now collect bounded, transient motion history and derive basic observed states: steady flight, climb/descent, acceleration/deceleration and sustained left/right turns. Popups include supported labels and observed turn/vertical trends. `/motion/status` exposes eligibility, counters, limits and provisional thresholds; `/motion` returns derived states. Raw positions and primitive summaries remain in memory and reset on restart.
-
-TFMS and FR24 `flights.js` are excluded from motion analytics because of sparse reports and coarse position precision respectively. Their existing feed, density, map and destination-ETA behavior continues. The normalized aircraft endpoints and persisted range/density datasets are unchanged.
-
-For exact inputs, equations, thresholds, sampling, duration semantics and limitations, read [the implemented primitive guide](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/motion-primitives-v0.7.0-dev.1.md). This is a local test build; orbit/holding patterns, destination divergence, CPA/TCPA and formations are later work. The first public motion release is reserved as **v0.7.0**, after validation.
-
-### v0.7.0-dev.2 diagnostics
-
-Development builds log current motion quality and primitive counts once per minute. See `docs/motion-analytics-engineering.md` for warming-up eligibility, support durations, overlapping labels and observed versus reported vertical rate. This update changes no motion thresholds or persistent data.
-
-## v0.7.0-dev.3 — Motion exploration (local preview)
-
-- Motion panel offers live counts and any-label filtering. Fit aircraft fits the shown subset.
-- Optional motion colors with legend/overlap priority, retaining O/D badges, military popup labels and closest glow.
-- ETA labels identify stale/unknown position age; baseline calculation unchanged.
-- Configurable Tracker aggregate/closest/military entities with sanitized failure diagnostics. Optional sensor failures no longer block route metadata.
-- Updated engineering notes document a future coupled descent/approach model and validation prerequisites; modeled arrival is not implemented here.
-- No data migration or motion-threshold changes.
-
-Tracker options: `tracker_aircraft_entity`, `tracker_closest_entity`, `tracker_military_entity`. Previous names are defaults; enter exact suffixed sensor IDs if needed, save and restart. `/tracker-enrichment` exposes selected entities and safe failure details.
-
-Motion controls affect only map display and reset on reload to All aircraft with colors off.
-
-
-## v0.7.0-dev.5 diagnostic preview
-
-Enable **Verbose diagnostic logging** in App Configuration, save and restart for bounded motion rejection summaries and density timing breakdowns. The toggle defaults off and is retained in settings backups. Aircraft icons use 24 px below zoom 6 and 36 px from zoom 6 upward. Motion color/filter help is on the status page. See [diagnostic testing](../docs/v0.7.0-dev.5-testing.md).
-
-
-## v0.7.0-dev.6 SQL diagnostics
-
-With verbose logging enabled, uncached density queries report SQLite query plans, page/cache settings, approximate VM work and executing-thread CPU time. `bypass_cache=1` forces recomputation for diagnostic comparisons. The plan does not run a second density scan. Missing-coordinate motion rejections are expected for aircraft without positions; the existing `invalid` counter remains for compatibility. See ../docs/v0.7.0-dev.6-testing.md.
-
-
-## v0.7.0-dev.7 density SQL preview
-
-Viewport density queries now select spatial cells before reading daily records and group numeric coordinates instead of parsing text cell IDs. Existing observations, histories and schemas remain unchanged. Keep verbose logging enabled to compare the new query plan and uncached timings. See ../docs/v0.7.0-dev.7-testing.md.
-
-
-## v0.7.0-dev.8 density preview
-
-Daily parent totals accelerate broad views while retaining fine observations. **Load density** reuses two-hour cached tiles; **Refresh now** rebuilds the visible view. The map displays an As of time. Restore/clear invalidate caches. The first view can backfill parent totals and increase database storage; progress appears in logs. Full JSON backups remain fine-resolution. See ../docs/v0.7.0-dev.8-testing.md.

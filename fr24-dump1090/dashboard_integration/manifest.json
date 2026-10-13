@@ -1,7 +1,7 @@
 {
   "domain": "aircraft_bridge",
   "name": "Aircraft Bridge",
-  "version": "0.7.0-dev.13",
+  "version": "0.7.0",
   "config_flow": true,
   "documentation": "https://github.com/brian-r-ohern/fr24-dump1090-bridge",
   "issue_tracker": "https://github.com/brian-r-ohern/fr24-dump1090-bridge/issues",

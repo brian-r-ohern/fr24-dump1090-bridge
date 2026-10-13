@@ -7,15 +7,15 @@
 FR24 dump1090 Bridge functions as a lightweight, non-invasive local aircraft-data layer for Home Assistant:
 
 - 🗺️ Live Visualization: Displays aircraft on an interactive, real-time map with live statistics.
-- ⚙️ Normalization: Accepts one explicitly selected source and publishes consistent dump1090/readsb-compatible `aircraft.json` endpoints.
+- ⚙️ Normalization: Accepts one explicitly selected source and, for non-FAA sources, publishes dump1090/readsb-compatible `aircraft.json` endpoints.
 - 🔒 Zero Interference: It does not alter an FR24 receiver's normal upstream feed, replace receiver hardware, or attempt to decode raw ADS-B RF signals.
 
-The recommended/default input is a receiver's SBS/BaseStation TCP feed on port `30003`. An authenticated FR24 `/flights.js` feed or an existing dump1090/readsb `aircraft.json` feed can be selected as mutually exclusive alternatives. An FR24 receiver is therefore not required when a compatible `aircraft.json` source is already available. FAA SWIM TFMS is a fourth option for users with an authorized subscription and a configured feed.
+The recommended/default input is a receiver's SBS/BaseStation TCP feed on port `30003`. An authenticated FR24 `/flights.js` feed or an existing dump1090/readsb `aircraft.json` feed can be selected as mutually exclusive alternatives. An FR24 receiver is therefore not required when a compatible `aircraft.json` source is already available. Authorized FAA SWIM TFMS and SFDPS are local-view-only alternatives; FAA data is not redistributed through aircraft-feed or export endpoints.
 
 ## New in v0.7.0
 
 - **FAA SFDPS support** — Added the FAA's SFDPS surveillance feed as a new aircraft tracking data source.
-- **Destination ETA** — Added estimated arrival times based on destination airport and aircraft flight characteristics.
+- **Destination ETA** — Added direct-distance/current-ground-speed estimates, plus a separately labeled experimental modeled-arrival range for eligible aircraft.
 - **Aircraft motion analytics** — Added motion classification for climbing, descending, accelerating, decelerating, stable course, stable speed, and other flight behaviors.
 - **Color by activity** — Added aircraft icon coloring based on aircraft motion and activity.
 <img width="761" height="114" alt="Screenshot 2026-10-13 065706" src="https://github.com/user-attachments/assets/dfc8d6ab-f70e-48c7-8354-256545a3f261" />
@@ -39,7 +39,7 @@ For the alternate `flights_js` source, configure the receiver host, HTTP port, u
 
 The app currently supports `amd64` Home Assistant systems and VMs.
 
-For FAA SWIM TFMS, enter the subscription connection details described under [Input sources](#faa-swim-tfms).
+For authorized FAA SWIM TFMS or SFDPS, enter the subscription connection details described under [Input sources](#faa-swim-tfms).
 
 ## Home Assistant App
 
@@ -47,7 +47,7 @@ For FAA SWIM TFMS, enter the subscription connection details described under [In
 
 ## Input sources
 
-Source selection is explicit. The bridge uses exactly one of the four supported sources and does not merge or automatically fail over between sources.
+Source selection is explicit. The bridge uses exactly one of the five supported sources and does not merge or automatically fail over between sources.
 
 ### SBS/BaseStation — recommended/default
 
@@ -74,7 +74,7 @@ Users with an authorized FAA SWIM subscription will need the connection details 
 
 <img width="1024" height="623" alt="image" src="https://github.com/user-attachments/assets/00682b22-c111-4b69-8e92-45b6d0fdcff3" />
 
-FAA SWIM TFMS support was introduced in v0.5.3. The App uses user-supplied SWIM connection/subscription information, filters TFMS `trackInformation` geographically around Home Assistant Home, and republishes accepted tracks through the existing normalized aircraft endpoints and map. SWIM credentials, queue identifiers, and Home coordinates are not exposed through bridge diagnostics.
+FAA SWIM TFMS support was introduced in v0.5.3. The App uses user-supplied SWIM connection/subscription information, filters TFMS `trackInformation` geographically around Home Assistant Home, and displays accepted tracks only in the local map; FAA tracks are not available through normalized aircraft-feed or export endpoints. SWIM credentials, queue identifiers, and Home coordinates are not exposed through bridge diagnostics.
 
 ### TFMS airport matching and map display
 
@@ -83,6 +83,10 @@ When using TFMS, enter the full four-letter airport identifier in `destination_a
 The observed coverage outline is hidden for TFMS because its boundary reflects the configured geographic filter rather than radio reception. Numeric track/course remains visible with a 16-point compass label, such as `274.4° (W)`; calculated course retains its `(course)` label.
 
 For optional track history, see [Developer-only track history](#developer-only-track-history).
+
+### FAA SWIM SFDPS
+
+SFDPS is a fifth, mutually exclusive source for authorized FAA SWIM subscribers. It displays FIXM surveillance tracks in the local map, with source-specific density and motion analytics. As with TFMS, aircraft-feed and general data-export endpoints are disabled for FAA sources. See [App documentation](fr24-dump1090/DOCS.md) for setup and limitations.
 
 ## Raw ADS-B Map with density and range ring
 
@@ -98,15 +102,9 @@ The Raw ADS-B Map also uses a responsive header that adapts to narrow mobile dis
 
 The bridge can read Home Assistant `zone.home` through the supported App/Core API proxy and display it on the Raw ADS-B Map. Home coordinates are not included in `/status`, aircraft JSON, logs, or tile diagnostics. Home also supports range and density-envelope calculations and the TFMS geographic filter. Without Home, ADS-B feeds and density collection continue; TFMS needs Home for filtering.
 
-## Maximum observed range
+## Range and density
 
-The Raw ADS-B Map maintains a persistent empirical coverage envelope from positioned aircraft received through the selected aircraft source. For each 0.5° bearing sector, the bridge retains the farthest observed aircraft and displays that maximum across the sector.
-
-The envelope grows as farther observations are received and is intentionally not smoothed, preserving the actual observed maxima and directional variations in reception. The maximum observed distance is also shown in the map status display.
-
-### Range-envelope resolution and GeoJSON evolution
-
-The active range envelope uses **0.5° / 720 bins**, retained in v0.6.0. Each bin preserves its empirical maximum and provenance. The original legacy 1° dataset remains available as a baseline. GeoJSON exports ordered maxima and the rendered envelope; empty bins break the boundary, and only complete coverage produces a closed envelope polygon.
+The map provides maximum observed range, density heat maps, source-separated histories, backups, and cached density views. See [operating details](fr24-dump1090/DOCS.md#maximum-observed-range-coverage) for resolution, restore, and query behavior.
 
 ## Backup and recovery
 
@@ -157,46 +155,9 @@ For consumers that require a complete URL, the dump1090/readsb-compatible aircra
 
 Aircraft enrichment with routes, icons, flight numbers, airlines, military aircraft flagging, and other metadata can be selected with an `enrichment_source`. The default `adsb_tracker` preserves existing behavior; set it to `none` to disable ADSB Aircraft Tracker enrichment without changing the selected aircraft data source.
 
-## Endpoints
+## API and diagnostics
 
-<img width="790" height="382" alt="image" src="https://github.com/user-attachments/assets/15bfde9b-ff48-4152-8510-3d5f071e7419" />
-
-- `/` — Raw ADS-B Map
-- `/aircraft.json` — dump1090/readsb-compatible aircraft feed
-- `/data/aircraft.json` — compatibility alias for the aircraft feed
-- `/status` — machine-readable bridge and active-source status
-- `/status-page` — human-readable status page
-- `/health` — bridge process/service health
-- `/range-coverage` — observed maximum-range coverage and convergence metadata
-- `/range-coverage.geojson` — live coverage exported as GeoJSON
-- `POST /range-coverage/import` — validated merge/restore of exported coverage JSON
-- `/tracker-enrichment` — optional ADSB Aircraft Tracker map enrichment
-- `/map-config` — map configuration used by the Raw ADS-B Map
-- `/tile-debug` — map tile proxy diagnostics
-- `/settings` — settings backup and recovery
-- `/traffic-density` — density cell statistics
-- `POST /traffic-density/import` — validated density restore
-- `POST /data/clear` — confirmed data clearing
-- `/traffic-density/status` — collection and query diagnostics
-- `/traffic-density/export` — density JSON backup
-- `/traffic-density.geojson` — spatial density export
-- `/traffic-density/envelopes` — density-derived range comparison
-- `/traffic-density/envelopes.geojson` — range-comparison GeoJSON export
-- `/tiles/{z}/{x}/{y}.png` — internal map-tile proxy route used by the map
-
-## Mapping philosophy
-
-The bridge avoids inventing information not supported by the selected input source. Aircraft without a position are retained and `alt_geom` is not synthesized.
-
-SBS mode provides genuine message-age information: `seen` is the age of the aircraft's latest SBS message and `seen_pos` is the age of its latest position. Top-level `messages` is the cumulative number of valid SBS `MSG` records received since startup. Aircraft are removed after 60 seconds without an SBS message.
-
-In flights.js mode, the original conservative behavior remains: ambiguous zero altitude/speed values are omitted, zero altitude is not automatically treated as on-ground, `seen: 0` is synthetic, and top-level `messages` is the number of aircraft in the current snapshot.
-
-Consumers performing geographic functions such as closest/nearest-aircraft calculations should ignore aircraft without a usable position.
-
-## Status and failure behavior
-
-Feed state is reported independently of process health so an upstream source outage does not cause a Home Assistant restart loop. `/status` adapts to the selected source: SBS mode reports message and connection statistics, while flights.js and aircraft.json modes report polling statistics. `/health` reports the health of the bridge service itself.
+For non-FAA sources, compatible aircraft feeds are available at `/aircraft.json` and `/data/aircraft.json`. The local map, `/status`, `/health`, density diagnostics, and configuration tools are described in the [endpoint reference](fr24-dump1090/DOCS.md#http-endpoint-reference). FAA aircraft-feed and general export routes remain disabled.
 
 ## Security
 
@@ -206,16 +167,16 @@ The aircraft.json source requires only the configured feed URL.
 
 Home Assistant `zone.home` coordinates are used for the Home marker, range and density-envelope calculations, and TFMS geographic filtering and are not included in aircraft feeds, status output, application logs, or tile diagnostics.
 
-The aircraft feed is unauthenticated. Keep port 8085 internal unless LAN access is actually required.
+For non-FAA sources, the aircraft feed is unauthenticated. Keep port 8085 internal unless LAN access is actually required. **FAA SWIM data is local-view-only and must never be forwarded, exported, or redistributed.**
 
-The App runs under a Home Assistant AppArmor profile. The profile has been tested with all four supported input modes: SBS/BaseStation TCP, FR24 `flights.js`, standard dump1090/readsb `aircraft.json`, and FAA SWIM TFMS.
+The App runs under a Home Assistant AppArmor profile, tested with all five input modes: SBS/BaseStation TCP, FR24 `flights.js`, dump1090/readsb `aircraft.json`, FAA SWIM TFMS, and FAA SWIM SFDPS.
 
 | Capability | AppArmor access | Verified |
 |---|---|---|
 | SBS/BaseStation TCP input | IPv4/IPv6 stream networking | ✅ |
 | FR24 `flights.js` input | HTTP + Digest authentication | ✅ |
 | dump1090/readsb `aircraft.json` input | HTTP/HTTPS polling | ✅ |
-| FAA SWIM TFMS input | TLS stream networking to the configured SWIM broker | ✅ |
+| FAA SWIM TFMS / SFDPS input | TLS stream networking to the configured SWIM broker | ✅ |
 | Bridge HTTP service | TCP/8085 | ✅ |
 | OpenStreetMap tile proxy | HTTPS networking + `/data` cache | ✅ |
 | Home Assistant `zone.home` lookup | Supervisor/Core API | ✅ |
