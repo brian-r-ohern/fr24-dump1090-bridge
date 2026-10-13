@@ -37,7 +37,7 @@ from swim_sfdps import parse_sfdps_tracks
 from density_tiles import CacheNotReady
 from swim_tfms import SwimTfmsClient, parse_tfms_tracks, update_tfms_course
 
-BUILD_VERSION = "0.7.0-dev.13"
+BUILD_VERSION = "0.7.0"
 airport_lookup = AirportLookup(Path(__file__).with_name('airports.json'))
 
 CONFIG_PATH = os.environ.get("FR24_OPTIONS_PATH", "/data/options.json")

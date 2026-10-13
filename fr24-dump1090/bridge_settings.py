@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 
 from bridge_config import validate_options
 
-VERSION = '0.7.0-dev.13'
+VERSION = '0.7.0'
 TOKEN = secrets.token_urlsafe(32)
 LOCK = threading.RLock()
 LIMIT = 65536
