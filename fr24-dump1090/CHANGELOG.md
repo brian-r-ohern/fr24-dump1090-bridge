@@ -1,6 +1,10 @@
-# 0.7.0-dev.13
+# Changelog
 
-## 0.7.0-dev.13
+## v0.7.0 — 2026-10-13 (Stable Release)
+
+Promoted **v0.7.0-dev.13** to **v0.7.0** following development and validation of the v0.7.0 feature set. This release consolidates all changes from dev.1 through dev.13.
+
+### v0.7.0-dev.13 — Final development build
 
 - Add live Map theme Auto/Light/Dark toolbar selector, applying the palette immediately without restart or reload.
 - Preserve the user's open-page choice across periodic map-config refreshes; the App setting remains the default for newly loaded map pages.
@@ -37,8 +41,6 @@
 - Enable SFDPS density in its own store and local motion analysis with independent report timestamps, a source-specific quality profile and reported-altitude provenance.
 - Preserve FAA local-view isolation, disabled range/envelopes, and TFMS/flights.js motion exclusions.
 - Document validation and preview limits in `docs/v0.7.0-dev.9-testing.md` and the motion engineering notes.
-
-
 - Add rebuildable daily parent totals at zooms 8/11/14 with transactional live maintenance.
 - Add bounded two-hour density tile caching, generation time and explicit Refresh now.
 - Invalidate caches on restore, clear and retention pruning; keep full backups authoritative.
@@ -64,8 +66,6 @@
 - Relocate motion display help to status page; show intentionally disabled Tracker correctly.
 - Preserve existing analytics thresholds, source eligibility and histories.
 
-# Changelog
-
 ## 0.7.0-dev.4
 
 - Increase aircraft SVG/marker dimensions 1.5× to 36 px, with centered 18 px anchors.
@@ -74,7 +74,6 @@
 - Block dump1090 aircraft output and history/data exports for both FAA sources; refresh their local map through embedded HTML display state. Dashboard titles identify local-view mode.
 - Bound SFDPS view state, reject stale/future/out-of-order updates, and sanitize SWIM exception reporting.
 - Add synthetic parser/isolation tests and setup/engineering notes; no captured FAA records included.
-
 
 Version 0.6.8 is the public release of the traffic-density work. Entries 0.6.0–0.6.7 preserve its development sequence; they do not imply separate public releases.
 
