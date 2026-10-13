@@ -1,6 +1,8 @@
-# FR24 dump1090 Bridge
+# v0.7.0 — 2026-10-13 (Stable Release)
 
-## v0.7.0-dev.13 — Live map theme selector
+Promoted **v0.7.0-dev.13** to **v0.7.0** following development and validation of the v0.7.0 feature set. This release consolidates all changes from dev.1 through dev.13.
+
+### v0.7.0-dev.13 — Final development build
 
 Choose **Auto / Light / Dark** from **Map theme** in the map toolbar. The palette changes immediately without an App restart, page reload or density query. Auto continues to follow browser/device preference. Your choice remains active for that open map page, including periodic configuration refreshes. The App's saved `map_theme` setting is the default when opening/reloading a map page; it remains covered by settings backup/recovery.
 
