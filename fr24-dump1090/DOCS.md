@@ -209,12 +209,12 @@ Bridge status is collapsible: tap/click its heading to open or close it. On narr
 
 ## Source identity and legacy density upgrade
 
-Page titles, density stores and backup names identify the selected source. The Range ring checkbox controls ADS-B display; FAA TFMS continues density collection with range processing disabled. Existing untagged density needs explicit `density_legacy_source` attribution on upgrade. See [upgrade and testing notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.6.3-testing.md) for large-backup behavior and static Home Assistant sidebar labels.
+Page titles, density stores and backup names identify the selected source. The Range ring checkbox controls ADS-B display; FAA TFMS continues density collection with range processing disabled. Existing untagged density needs explicit `density_legacy_source` attribution on upgrade. See [upgrade and testing notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.6.x-development-validation.md) for large-backup behavior and static Home Assistant sidebar labels.
 
 
 ## Altitude heat maps and consistency envelopes
 
-The static sidebar title is Aircraft Bridge. Traffic Density supports Low/Middle/High combinations and All Traffic including Unknown. ADS-B maps offer on-demand dashed density envelopes for consistency comparison at 0.5°; the status page provides custom dates and JSON/GeoJSON exports. FAA data remains restricted to authorized local viewing; general export endpoints are disabled for FAA sources. See [usage and verification notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.6.4-testing.md). Stored altitude counters and backup schema are preserved.
+The static sidebar title is Aircraft Bridge. Traffic Density supports Low/Middle/High combinations and All Traffic including Unknown. ADS-B maps offer on-demand dashed density envelopes for consistency comparison at 0.5°; the status page provides custom dates and JSON/GeoJSON exports. FAA data remains restricted to authorized local viewing; general export endpoints are disabled for FAA sources. See [usage and verification notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.6.x-development-validation.md). Stored altitude counters and backup schema are preserved.
 
 ## Density refresh and data management
 

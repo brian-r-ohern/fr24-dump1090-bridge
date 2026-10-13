@@ -50,7 +50,7 @@ Development entries below document the progression; they are not separate stable
 - Keep detailed grid/timing diagnostics off the main banner; retain explicit load and forced refresh controls.
 - Enable SFDPS density in its own store and local motion analysis with independent report timestamps, a source-specific quality profile and reported-altitude provenance.
 - Preserve FAA local-view isolation, disabled range/envelopes, and TFMS/flights.js motion exclusions.
-- Document validation and preview limits in `docs/v0.7.0-dev.9-testing.md` and the motion engineering notes.
+- Document validation and preview limits in `docs/v0.7.0-development-validation.md` and the motion engineering notes.
 - Add rebuildable daily parent totals at zooms 8/11/14 with transactional live maintenance.
 - Add bounded two-hour density tile caching, generation time and explicit Refresh now.
 - Invalidate caches on restore, clear and retention pruning; keep full backups authoritative.
@@ -177,7 +177,7 @@ Version 0.6.8 is the public release of the traffic-density work. Entries 0.6.0â€
 - Add a Range ring checkbox for ADS-B sources; hiding it does not stop collection. Disable range routes and controls for FAA TFMS as well as its existing worker exclusion.
 - Replace full-memory density backup/restore with disk snapshots, compact streaming exports and fully validated disk-staged imports; remove the 256 MiB upload ceiling.
 - Retain zoom-17 storage, daily altitude/passage counts, 18-month retention, snapshot collision policy and the v0.6.2 responsive layout.
-- Include upgrade and test instructions in docs/v0.6.3-testing.md.
+- Include upgrade and test instructions in docs/v0.6.x-development-validation.md.
 
 ## 0.6.2
 

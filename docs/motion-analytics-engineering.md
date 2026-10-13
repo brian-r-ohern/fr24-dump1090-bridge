@@ -211,7 +211,7 @@ References: [FAA jet descent planning, Instrument Procedures Handbook chapter 3]
 
 ## v0.7.0-dev.4 — Source eligibility and display
 
-SFDPS is a local surveillance-view source in this increment, not a motion source. Motion eligibility remains SBS and standard aircraft.json only; FAA TFMS/SFDPS and coarse flights.js are excluded. SFDPS reported speed/altitude and its map course do not bypass these gates. No density state is created for SFDPS. Its parser/continuity/local-view contract and validation are in [dev.4 notes](v0.7.0-dev.4-testing.md).
+SFDPS is a local surveillance-view source in this increment, not a motion source. Motion eligibility remains SBS and standard aircraft.json only; FAA TFMS/SFDPS and coarse flights.js are excluded. SFDPS reported speed/altitude and its map course do not bypass these gates. No density state is created for SFDPS. Its parser/continuity/local-view contract and validation are in [dev.4 notes](v0.7.0-development-validation.md#original-record-v070-dev4-testingmd).
 
 Aircraft SVGs and Leaflet markers grow from 24 px to 36 px, with center anchors adjusted from 12 px to 18 px. Screen size stays constant with zoom; motion thresholds, filters and color priority are unchanged. Both FAA sources now reject dump1090 feed output and general data exports. Local map display state is embedded in its HTML rather than exposed through a separate aircraft feed API.
 
@@ -226,17 +226,17 @@ Density diagnostics break down lock wait, database preparation, SQLite execute/f
 
 ## dev.6 SQL diagnostic boundary
 
-Density query plans and approximate SQLite VM work are diagnostic evidence, not aircraft observations. Motion rejection semantics and current geometry thresholds remain unchanged. See [dev.6 testing](v0.7.0-dev.6-testing.md).
+Density query plans and approximate SQLite VM work are diagnostic evidence, not aircraft observations. Motion rejection semantics and current geometry thresholds remain unchanged. See [dev.6 testing](v0.7.0-development-validation.md#original-record-v070-dev6-testingmd).
 
 
 ## dev.7 density execution optimization
 
-Viewport-first numeric aggregation changes query work only. Motion state/admission and empirical observation statistics remain unchanged. See [validation and live tests](v0.7.0-dev.7-testing.md).
+Viewport-first numeric aggregation changes query work only. Motion state/admission and empirical observation statistics remain unchanged. See [validation and live tests](v0.7.0-development-validation.md#original-record-v070-dev7-testingmd).
 
 
 ## dev.8 empirical density acceleration
 
-Parent-day statistics are exact aggregates of observed base cells, not inferred aircraft motion. Passage aggregation remains the sum of base-cell passages. Display tiles are temporary snapshots with explicit generation times. Neither parent aggregation nor cache reuse creates credits in unobserved fine cells. See [dev.8 implementation and validation](v0.7.0-dev.8-testing.md).
+Parent-day statistics are exact aggregates of observed base cells, not inferred aircraft motion. Passage aggregation remains the sum of base-cell passages. Display tiles are temporary snapshots with explicit generation times. Neither parent aggregation nor cache reuse creates credits in unobserved fine cells. See [dev.8 implementation and validation](v0.7.0-development-validation.md#original-record-v070-dev8-testingmd).
 
 
 ## dev.9 — SFDPS observation and quality contract
