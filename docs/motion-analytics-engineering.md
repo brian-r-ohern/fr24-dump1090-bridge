@@ -1,6 +1,6 @@
 # Motion Analytics — Living Engineering Notes
 
-Status: design draft, October 10, 2026. Companion to [the v0.7 roadmap](motion-pattern-roadmap.md). This document records mathematical definitions, candidate heuristics, validation results and decisions as each increment is built. The basic motion engine and primitives are implemented in 0.7.0-dev.1; circle fitting and pattern grammar here remain reference designs. See [Implemented motion primitives](motion-primitives-v0.7.0-dev.1.md) for the actual preview formulas, thresholds, timings and limits. Thresholds below are experiments, not frozen defaults.
+Status: living implementation/design notes, updated October 16, 2026. v0.7.1 includes the envelope increments documented below; geometric pattern detectors remain planned. Companion to [the v0.7 roadmap](motion-pattern-roadmap.md). This document records mathematical definitions, candidate heuristics, validation results and decisions as each increment is built. The basic motion engine and primitives are implemented in 0.7.0-dev.1; circle fitting and pattern grammar here remain reference designs. See [Implemented motion primitives](motion-primitives-v0.7.0-dev.1.md) for the actual preview formulas, thresholds, timings and limits. Thresholds below are experiments, not frozen defaults.
 
 ## Pipeline and contracts
 
@@ -12,7 +12,7 @@ Status: design draft, October 10, 2026. Companion to [the v0.7 roadmap](motion-p
 | Pattern grammar | Primitive sequence plus observed geometry | Candidate orbit, racetrack, parallel passes, figure-eight | Sequence alone is insufficient; test geometry and repetition |
 | Geometric patterns | Supported candidates over time | Provisional/established/exited result with evidence | Intent and mission remain separate interpretations |
 
-Increment 0.7.0 establishes the first three contracts. Increment 0.7.1 evaluates individual geometry. Later increments add destination divergence, pair predictions and formations without replacing these contracts.
+Increment 0.7.0 establishes the first three contracts. Increment 0.7.1 delivers envelope performance and persistence; planned increment 0.7.2 evaluates individual geometry. Later increments add destination divergence, pair predictions and formations without replacing these contracts.
 
 ## 1. Observation time and continuity
 
@@ -341,3 +341,41 @@ Palette CSS is scoped to `.leaflet-tile-pane`. Light uses native OpenStreetMap t
 ## dev.13 — Live theme control
 
 The toolbar selector calls setMapTheme(value, true), establishing an in-memory page override. Subsequent map-config refreshes update the saved default only when no local override exists. Auto is itself a valid override and still reacts to prefers-color-scheme events. No settings write, endpoint call, tile fetch or density/motion operation is required for theme selection. A newly loaded map page starts from App map_theme; no per-browser persistent theme preference is introduced. Palette CSS remains scoped to basemap tiles.
+
+
+## Envelope aggregation diagnostic increment (0.7.0-envelope.2)
+
+The base-cell window aggregate for envelopes runs inside SQLite against consistent monthly snapshot copies. It groups source daily rows by unchanged base-cell ID and combines monthly groups into a temporary disk-backed aggregate. Counts sum, minimum/maximum altitude use null-aware extrema, last-observed uses maximum, and any incomplete/unknown first-observed history propagates an unknown first-observed value. Altitude-specific envelopes retain the existing combined-cell passage-count semantics. Base-cell centers, spherical distance/bearing, 0.5-degree bins, and furthest-cell selection remain unchanged. Existing export aggregation paths are unaffected.
+
+Verbose diagnostics retain snapshot/lock/bearing stages. The SQL stage reports strategy, approximate VM steps, monthly grouped-cell counts and elapsed time. This targets the measured 268.5-second Python aggregation phase; the separate 65.1-second bearing phase is unchanged. Equivalence tests cover multiple months, altitude bands and incomplete legacy history.
+
+
+# Envelope NumPy batch processing (0.7.0-envelope.3)
+
+Upgrade the local app retaining imported density history. Enable verbose_logging, restart and generate once. Capture bearing_calculation and generation completion timings, along with SQL aggregation timings.
+
+SQLite supplies at most 65,536 base cells per batch. Cell coordinates are decoded once and centers calculated directly using the same corner-average expression as polygon centers. NumPy evaluates spherical distances and bearings for arrays, assigns the 720 half-degree sectors, and performs indexed integer sums and per-sector maximum reductions separately for All/Low/Middle/High. Occupied-cell and combined passage counts retain existing meanings. Incomplete history propagates per qualifying band. The Python loop processes batches rather than every cell for every trigonometric calculation.
+
+Cells near sector boundaries use scalar bearing decisions. All candidates within 1e-7 NM of a batch sector maximum use the original scalar distance calculation to select the winner. Strict greater-than updates and cell-ID ordering preserve the first winner for equal distances. Output distance and winning-cell metadata use scalar results. Tiny floating differences between NumPy and platform math remain a numerical portability limit; tests compare exact full dictionaries for random global cells, polar/dateline Home positions and multiple batch sizes.
+
+Work memory scales with batch size plus 720 accumulators per band, not total history size. The App image installs Alpine py3-numpy. No downloaded runtime packages or additional configuration are needed. SQLite SQL aggregation, five-minute result cache, HTTP behavior and FAA isolation are unchanged. This build does not add background jobs.
+
+
+# Saved envelope builds (0.7.0-envelope.4)
+
+Load envelopes reads the last successful build without SQL aggregation or bearing calculations. Build envelopes explicitly regenerates the current rolling 30-day window, even within the previous five-minute cache lifetime or the 12-hour recommendation window. Existing legacy/export requests retain their five-minute cache behavior.
+
+The saved set includes all four altitude products, source, Home, actual UTC date window and generation timestamp. A single last-envelope.json lives alongside each source's density store. JSON is written to a temporary file, flushed/fsynced and atomically replaced only on successful generation. Failed rebuilds retain the old file and any already-displayed layers. A density-history change during generation prevents saving the obsolete result. Density import, clear and retention pruning invalidate the saved result. Source/Home mismatches cannot load it. Ordinary new observations do not invalidate it: age explicitly describes the snapshot.
+
+A saved rolling window remains loadable after midnight and beyond 12 hours; the actual saved dates are shown. At 12 hours the UI recommends refresh without deleting, hiding or automatically rebuilding the saved set. Age is checked when the panel opens and every minute; checks never build envelopes. Explicit custom date parameters must match when loading. With no saved matching set, Load is disabled. Build and Load are disabled in that browser during a request. Existing server generation lock still serializes concurrent builds; no background job/polling redesign is included. FAA restrictions remain unchanged, including saved/status requests.
+
+## Test on HAOS
+
+1. Upgrade the local diagnostic install retaining its imported history. Enable verbose logging.
+2. Build once; capture total timings. Toggle altitude products and confirm all display.
+3. Reload the page and choose Load. Expect quick display and no aggregation/bearing debug stages.
+4. Restart the app, then Load again. Verify the saved timestamp/date window remain.
+5. Choose Build immediately: expect a real new build, even though the saved set is recent.
+6. An old saved set remains loadable; after 12 hours age indicates Refresh recommended.
+
+Automated tests cover persistence after store reopen, age threshold, forced build, failed build/atomic replacement, source/Home/window matching, history invalidation and HTTP/FAA restrictions.

@@ -12,7 +12,16 @@ FR24 dump1090 Bridge functions as a lightweight, non-invasive local aircraft-dat
 
 The recommended/default input is a receiver's SBS/BaseStation TCP feed on port `30003`. An authenticated FR24 `/flights.js` feed or an existing dump1090/readsb `aircraft.json` feed can be selected as mutually exclusive alternatives. An FR24 receiver is therefore not required when a compatible `aircraft.json` source is already available. Authorized FAA SWIM TFMS and SFDPS are local-view-only alternatives; FAA data is not redistributed through aircraft-feed or export endpoints.
 
-## New in v0.7.0
+## New in v0.7.1
+
+- **Faster density envelopes** — SQL aggregation and bounded NumPy processing retain the original cell precision and 0.5° bearing bins.
+- **Load or Build** — Load the last successful envelope set quickly, including after an App restart. Build explicitly regenerates it; failed rebuilds retain the saved set.
+- **Visible age** — Shows when envelopes were built and recommends refresh after 12 hours. Older sets remain loadable.
+- **Targeted diagnostics** — Verbose logging reports snapshot, aggregation and bearing-processing timings.
+
+On the tested history of roughly four million cells, full generation fell from about 5 minutes 39 seconds to 71 seconds; saved loads took 0.17–0.31 seconds. These are measurements from one HAOS installation, not guaranteed timings.
+
+## Introduced in v0.7.0
 
 - **FAA SFDPS support** — Added the FAA's SFDPS surveillance feed as a new aircraft tracking data source.
 - **Destination ETA** — Added direct-distance/current-ground-speed estimates, plus a separately labeled experimental modeled-arrival range for eligible aircraft.
@@ -22,7 +31,7 @@ The recommended/default input is a receiver's SBS/BaseStation TCP feed on port `
 
 - **Traffic density improvements** — Improved density-map processing, caching, and performance.
 - **Map themes** — Added Auto, Light, and Dark map appearance options.
-- **Expanded diagnostics** — Improved debug-mode logging for aircraft tracking, motion classification, and ETA calculations.
+- **Expanded diagnostics** — Improved debug-mode logging for aircraft tracking and motion classification. ETA assumptions and fallback reasons appear in aircraft popups.
 - See the [Roadmap](#roadmap) for future development plans.
 
 ## Home Assistant installation
@@ -193,7 +202,7 @@ Track history is a developer-only tool and appears only when `history_url` is co
 
 The FR24 dump1090 Bridge was created to normalize local aircraft tracking data into dump1090/readsb-compatible endpoints. It now also provides a native map, persistent altitude-based traffic density, and empirical range envelopes.
 
-Future development will explore motion and spatial analysis, including closest point of approach (CPA), time to closest point of approach (TCPA), and identification of patterns such as holding, converging tracks, and recurring traffic concentrations. These capabilities will depend on the selected feed’s position precision, update cadence, and available metadata.
+v0.7.1 delivers envelope performance and saved-build improvements. The next planned increment, v0.7.2, focuses on repeated single-aircraft geometry: constant-radius turns/orbits, reversals, racetrack/holding-like patterns and precedence. See the [detailed roadmap](docs/motion-pattern-roadmap.md). Later development will explore motion and spatial analysis, including closest point of approach (CPA), time to closest point of approach (TCPA), and identification of patterns such as holding, converging tracks, and recurring traffic concentrations. These capabilities will depend on the selected feed’s position precision, update cadence, and available metadata.
 
 **Any detected motion patterns and proximity alerts will be informational and intended for observation and analysis.**
 

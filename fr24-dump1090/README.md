@@ -1,6 +1,6 @@
 # FR24 dump1090 Bridge — Home Assistant App
 
-**Version 0.7.0** — Stable release, promoted from `v0.7.0-dev.13`.
+**Version 0.7.1** — Faster envelope generation and saved envelope builds.
 
 FR24 dump1090 Bridge displays aircraft from one selected input source in Home Assistant. For non-FAA sources, it also provides normalized dump1090/readsb-compatible aircraft feeds. It does not alter receiver hardware or the receiver’s upstream feed.
 
@@ -14,7 +14,17 @@ FR24 dump1090 Bridge displays aircraft from one selected input source in Home As
 
 **FAA SWIM restriction:** TFMS and SFDPS are for authorized local consumption and analysis only. Selecting either FAA source disables downstream aircraft-feed and general export endpoints. Do not rebroadcast or redistribute FAA SWIM data.
 
-## What's new in v0.7.0
+## What's new in v0.7.1
+
+- SQL aggregation and bounded NumPy batches accelerate envelope generation while retaining base-cell precision.
+- Separate **Load envelopes** and **Build envelopes** controls.
+- Last successful build persists across restarts, with age and a 12-hour refresh recommendation.
+- Failed rebuilds preserve the saved set; density import/clear/pruning invalidate it. Source and Home must match.
+- Expanded envelope stage diagnostics under `verbose_logging`.
+
+Build once after upgrading to create the saved set. Existing density history and settings are retained. NumPy is installed by the App image; no user package installation is needed.
+
+## Introduced in v0.7.0
 
 - Destination airport lookup and direct-distance/current-speed ETA; a separately labeled experimental modeled arrival range is available for qualifying aircraft.
 - Motion analytics, activity-based map coloring and filtering.

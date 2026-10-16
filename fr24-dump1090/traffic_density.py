@@ -245,6 +245,7 @@ class DensityStore:
                     self.tile_cache.clear()
                     self.tile_cache_bytes = 0
                     self.restore_epoch += 1
+                    (self.directory/'last-envelope.json').unlink(missing_ok=True)
                     path.unlink()
                     for suffix in ('-journal','-wal','-shm'):
                         Path(str(path)+suffix).unlink(missing_ok=True)
@@ -323,6 +324,7 @@ class DensityStore:
             self.tile_cache.clear()
             self.tile_cache_bytes = 0
             self.restore_epoch += 1
+            (self.directory/'last-envelope.json').unlink(missing_ok=True)
             self.last_query = None
             self.last_error = None
             self.skipped_positions = 0
@@ -666,4 +668,5 @@ class DensityStore:
                         counts[operation]+=1
             self.tracks.clear()
             self.restore_epoch += 1
+            (self.directory/'last-envelope.json').unlink(missing_ok=True)
         return counts

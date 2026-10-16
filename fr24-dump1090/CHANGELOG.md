@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.7.1 — 2026-10-16
+
+### Density envelope performance and saved builds
+
+- Replace Python per-row window aggregation with SQLite base-cell grouping and cross-month merging.
+- Process distance/bearing calculations in bounded 65,536-cell NumPy batches. Preserve original cell centers, 720 half-degree sectors, altitude counts, passage semantics and scalar farthest-cell selection.
+- Add separate **Load envelopes** and **Build envelopes** controls. Persist the last successful set across restarts with source, Home, UTC date window and generation time.
+- Show saved age and recommend refresh after 12 hours; older results remain loadable. Explicit Build regenerates even when a recent result exists.
+- Preserve the saved result on failed rebuilds. Invalidate saved data after density import, clear or retention pruning; reject source/Home mismatches.
+- Add verbose stage timings/progress and request IDs. Update AppArmor's explicit module list and install NumPy in the App image.
+- Correct operational instructions and move repeated single-aircraft geometry to the planned v0.7.2 increment. No new motion detectors are included.
+
+### Validation
+
+Developed through envelope.1–envelope.4. On the user's roughly four-million-cell history, generation improved from 338.8 seconds (instrumented baseline) to 71.0 seconds. Saved loads measured 0.17–0.31 seconds, including after restart. Measurements are installation-specific and the live dataset grew between runs. Automated tests compare old/new products and cover persistence, failure preservation, invalidation and FAA restrictions. See [v0.7.1 validation](../docs/v0.7.1-validation.md).
+
+Settings, density backup formats, range coverage, source selection and FAA local-only restrictions are unchanged. The saved envelope file is derived local data; this release does not change density observation credit or add geometric motion patterns.
+
 ## v0.7.0 — 2026-10-13 (Stable Release)
 
 Promoted **v0.7.0-dev.13** to **v0.7.0** following development and validation of the v0.7.0 feature set. This release consolidates all changes from dev.1 through dev.13.

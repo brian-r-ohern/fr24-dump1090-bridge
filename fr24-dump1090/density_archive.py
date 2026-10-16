@@ -7,6 +7,7 @@ import codecs
 import json
 import sqlite3
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -146,24 +147,36 @@ def restore_stream(store, stream, length, legacy_source=None):
 
 
 @contextmanager
-def snapshots(store, month=None):
+def snapshots(store, month=None, diagnostic=None):
+    emit = diagnostic or (lambda *args, **kwargs: None)
+    snapshot_started = time.perf_counter()
     if month is not None and date.fromisoformat(month+'-01').strftime('%Y-%m') != month:
         raise ValueError('month must be YYYY-MM')
     with tempfile.TemporaryDirectory(prefix='.export-', dir=store.directory) as folder:
         paths = []
+        waiting = time.perf_counter()
+        emit('snapshot_lock_wait_started')
         with store.lock:
+            emit('snapshot_lock_acquired', seconds=round(time.perf_counter()-waiting,4))
+            stage = time.perf_counter()
+            emit('flush_started')
             store.prune()
             store.flush(True)
+            emit('flush_completed', seconds=round(time.perf_counter()-stage,4))
             for path in sorted(store.directory.glob('????-??.dat')):
                 if month is not None and month != path.stem:
                     continue
                 target = Path(folder)/path.name
                 db = sqlite3.connect(target)
                 try:
+                    stage = time.perf_counter()
+                    emit('snapshot_copy_started', month=path.stem, bytes=path.stat().st_size)
                     store._db(path.stem).backup(db)
+                    emit('snapshot_copy_completed', month=path.stem, seconds=round(time.perf_counter()-stage,4))
                 finally:
                     db.close()
                 paths.append(target)
+        emit('snapshots_ready', months=len(paths), seconds=round(time.perf_counter()-snapshot_started,4))
         yield Path(folder), paths
 
 
@@ -208,8 +221,55 @@ def archive_file(store, month=None):
         yield output
 
 
+def aggregate_base_window(aggregate, path, start, end, emit):
+    """Aggregate unchanged base cells inside SQLite; preserve exact counters."""
+    stage = last_report = time.perf_counter()
+    vm_steps = 0
+    def progress():
+        nonlocal last_report, vm_steps
+        vm_steps += 100000
+        now = time.perf_counter()
+        if now-last_report >= 10:
+            emit('window_aggregation_progress', month=path.stem,
+                 strategy='sql_base_cells', vm_steps_approx=vm_steps,
+                 seconds=round(now-stage,4))
+            last_report = now
+        return 0
+    emit('window_aggregation_started', month=path.stem, strategy='sql_base_cells')
+    aggregate.execute('ATTACH DATABASE ? AS envelope_source', (str(path),))
+    aggregate.set_progress_handler(progress, 100000)
+    try:
+        # First-observed is unknown if any contributing history is incomplete
+        # or has an unknown first observation. SQL MIN otherwise ignores NULL.
+        expressions = ['SUM("'+field+'")' for field in FIELDS[:6]] + [
+            'MIN(min_ft)', 'MAX(max_ft)',
+            'CASE WHEN MIN(history_complete)=0 OR COUNT(first_observed)<COUNT(*) THEN NULL ELSE MIN(first_observed) END',
+            'MAX(last_observed)', 'MIN(history_complete)']
+        merge = ['"'+field+'"=daily."'+field+'"+excluded."'+field+'"' for field in FIELDS[:6]] + [
+            'min_ft=CASE WHEN daily.min_ft IS NULL THEN excluded.min_ft WHEN excluded.min_ft IS NULL THEN daily.min_ft ELSE MIN(daily.min_ft,excluded.min_ft) END',
+            'max_ft=CASE WHEN daily.max_ft IS NULL THEN excluded.max_ft WHEN excluded.max_ft IS NULL THEN daily.max_ft ELSE MAX(daily.max_ft,excluded.max_ft) END',
+            'first_observed=CASE WHEN daily.history_complete=0 OR excluded.history_complete=0 THEN NULL ELSE MIN(daily.first_observed,excluded.first_observed) END',
+            'last_observed=MAX(daily.last_observed,excluded.last_observed)',
+            'history_complete=MIN(daily.history_complete,excluded.history_complete)']
+        sql = ("INSERT INTO daily SELECT cell,'window',"+','.join(expressions)+
+               ' FROM envelope_source.daily WHERE day BETWEEN ? AND ? GROUP BY cell '+
+               'ON CONFLICT(cell,day) DO UPDATE SET '+','.join(merge))
+        aggregate.execute(sql, (start.isoformat(),end.isoformat()))
+        aggregate.commit()
+        # Changes counts grouped cells inserted/updated, not source daily rows.
+        cells = aggregate.execute('SELECT changes()').fetchone()[0]
+        emit('window_aggregation_completed', month=path.stem,
+             strategy='sql_base_cells', grouped_cells=cells,
+             vm_steps_approx=vm_steps, seconds=round(time.perf_counter()-stage,4))
+    finally:
+        aggregate.set_progress_handler(None, 0)
+        if aggregate.in_transaction:
+            aggregate.rollback()
+        aggregate.execute('DETACH DATABASE envelope_source')
+
+
 @contextmanager
-def window_cells(store, start=None, end=None, zoom=BASE_ZOOM, bbox=None):
+def window_cells(store, start=None, end=None, zoom=BASE_ZOOM, bbox=None, diagnostic=None, sql_base_cells=False):
     """Consistent disk-backed window aggregate shared by exports and envelopes."""
     today = datetime.fromtimestamp(store.clock(),timezone.utc).date()
     start = date.fromisoformat(start) if start else today-timedelta(days=29)
@@ -220,16 +280,26 @@ def window_cells(store, start=None, end=None, zoom=BASE_ZOOM, bbox=None):
         import math
         if len(bbox)!=4 or not all(math.isfinite(v) for v in bbox) or not(-180<=bbox[0]<=bbox[2]<=180 and -90<=bbox[1]<=bbox[3]<=90):
             raise ValueError('invalid bbox')
-    with snapshots(store) as (folder,paths):
+    emit = diagnostic or (lambda *args, **kwargs: None)
+    with snapshots(store, diagnostic=diagnostic) as (folder,paths):
         aggregate = sqlite3.connect(folder/'aggregate.sqlite'); aggregate.row_factory = sqlite3.Row
         try:
             aggregate.executescript(SCHEMA)
             for path in paths:
                 if not start.strftime('%Y-%m')<=path.stem<=end.strftime('%Y-%m'):
                     continue
+                if sql_base_cells and zoom == BASE_ZOOM and bbox is None:
+                    aggregate_base_window(aggregate,path,start,end,emit)
+                    continue
                 db = sqlite3.connect(path); db.row_factory = sqlite3.Row
+                stage = last_report = time.perf_counter(); rows = 0
+                emit('window_aggregation_started', month=path.stem)
                 try:
                     for row in db.execute('SELECT * FROM daily WHERE day BETWEEN ? AND ?',(start.isoformat(),end.isoformat())):
+                        rows += 1
+                        if rows % 10000 == 0 and time.perf_counter()-last_report >= 10:
+                            emit('window_aggregation_progress', month=path.stem, rows=rows, seconds=round(time.perf_counter()-stage,4))
+                            last_report = time.perf_counter()
                         cell = parent(row['cell'],zoom)
                         ring = polygon(cell)
                         if bbox and (ring[1][0]<bbox[0] or ring[0][0]>bbox[2] or ring[0][1]>bbox[3] or ring[2][1]<bbox[1]):
@@ -240,6 +310,7 @@ def window_cells(store, start=None, end=None, zoom=BASE_ZOOM, bbox=None):
                 finally:
                     db.close()
                 aggregate.commit()
+                emit('window_aggregation_completed', month=path.stem, rows=rows, seconds=round(time.perf_counter()-stage,4))
             window={'start':start.isoformat(),'end':end.isoformat(),'day_timezone':'UTC','display_zoom':zoom}
             yield folder, aggregate, window
         finally:

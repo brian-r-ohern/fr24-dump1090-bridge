@@ -1,6 +1,6 @@
 # v0.7.x — Motion & Pattern Analysis Roadmap
 
-Purpose: analyze what aircraft are doing now, rather than where they have historically been observed. A rolling in-memory history supplies motion context without turning the Bridge into a permanent flight-history database. This roadmap defines the v0.7 series direction. The 0.7.0-dev.1 preview implements the common short-term motion engine, basic flight-state primitives and the destination-distance/current-ground-speed ETA. Subsequent increments add geometric patterns and pair analysis. Exact feature-to-release assignments remain open. The interim v0.8.x roadmap labels are superseded.
+Purpose: analyze what aircraft are doing now, rather than where they have historically been observed. A rolling in-memory history supplies motion context without turning the Bridge into a permanent flight-history database. This roadmap defines the v0.7 series direction. The public v0.7.0 release implements the common short-term motion engine, basic flight-state primitives and the destination ETA and experimental modeled arrival range. v0.7.1 improves envelope performance and persistence. Subsequent increments add geometric patterns and pair analysis. Exact feature-to-release assignments remain open. The interim v0.8.x roadmap labels are superseded.
 
 ## Evidence and metadata
 
@@ -114,14 +114,15 @@ Start with the common motion foundation rather than making destination ETA the p
 | Proposed increment | Scope | Completion evidence |
 | --- | --- | --- |
 | 0.7.0 — foundation and basic flight states | Bounded timestamped history, source-age/duplicate/gap handling, motion quality, steady flight, climb/descent, speed trends and sustained turns; optional validated ETA companion | Stable state labels with duration/support; repeated ADS-B snapshots do not create false confidence; TFMS and flights.js remain excluded |
-| 0.7.1 — repeated single-aircraft geometry | Constant-radius turns/orbits, reversals, racetrack/holding-like and pattern precedence | Repetition distinguishes a transient turn from an established pattern; large racetracks and exits behave correctly |
-| 0.7.2 — destination and Home trends | Inbound/crossing/outbound and sustained movement away from last reported destination; suppress divergence during established holding-like geometry | Departure vectors and racetrack legs avoid repetitive divergence notices; stale metadata is visible |
-| 0.7.3 — proximity and CPA/TCPA | Three-dimensional separation, spatial gating, relative-motion predictions and explainable candidate highlights | Constant-motion assumptions and altitude uncertainty are exposed; bounded processing at high aircraft counts |
-| 0.7.4 and later — richer patterns and coordinated groups | Parallel/grid passes, figure-eights, correlated vectors, persistent formations, explicit-route deviation and contextual hypotheses | Positive/negative trajectories distinguish geometry from intent; supporting evidence remains inspectable |
+| 0.7.1 — envelope performance and saved builds | SQL aggregation, bounded NumPy reduction, persistent Load/Build controls, age and diagnostics | Equivalent products; fast saved load after restart; history/source/Home validation |
+| 0.7.2 — repeated single-aircraft geometry | Constant-radius turns/orbits, reversals, racetrack/holding-like and pattern precedence | Repetition distinguishes a transient turn from an established pattern; large racetracks and exits behave correctly |
+| 0.7.3 — destination and Home trends | Inbound/crossing/outbound and sustained movement away from last reported destination; suppress divergence during established holding-like geometry | Departure vectors and racetrack legs avoid repetitive divergence notices; stale metadata is visible |
+| 0.7.4 — proximity and CPA/TCPA | Three-dimensional separation, spatial gating, relative-motion predictions and explainable candidate highlights | Constant-motion assumptions and altitude uncertainty are exposed; bounded processing at high aircraft counts |
+| 0.7.5 and later — richer patterns and coordinated groups | Parallel/grid passes, figure-eights, correlated vectors, persistent formations, explicit-route deviation and contextual hypotheses | Positive/negative trajectories distinguish geometry from intent; supporting evidence remains inspectable |
 
 These are proposed feature boundaries, not fixed release promises. Split an increment if validation requires it. Basic primitives feed all later detectors; repeated geometry precedes divergence notifications because its precedence rules reduce predictable false positives. Pair prediction and formation grouping follow after individual motion quality is established.
 
-Use `0.7.0-dev.N` for local validation builds, however many are needed. Reserve `0.7.0` for the first agreed public motion release; the phase numbers above describe later capability milestones, not a requirement to publish each local revision. The earlier ETA-only prototype label `0.8.0-dev.1` is superseded.
+Use `0.7.2-dev.N` for the next geometry validation builds, however many are needed. v0.7.0 is the first public motion release and v0.7.1 is the envelope follow-up; the phase numbers above describe later capability milestones, not a requirement to publish each local revision. The earlier ETA-only prototype label `0.8.0-dev.1` is superseded.
 
 Most state stays in memory; persistence requires a specific later requirement. No change to authoritative 0.5° / 720-bin coverage or density observation credit is implied.
 

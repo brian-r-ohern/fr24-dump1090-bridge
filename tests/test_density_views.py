@@ -24,6 +24,102 @@ class DensityViewTests(unittest.TestCase):
             self.store.observe([{'hex':str(index),'lat':lat,'lon':self.lon,'alt_baro':alt}],NOW)
         self.cache=EnvelopeCache(self.store,clock=lambda:NOW)
 
+    def test_envelope_diagnostics_preserve_results_and_cache(self):
+        from contextlib import redirect_stdout
+        import io
+        quiet = self.cache.get(self.home)
+        self.cache.entries.clear()
+        self.store.verbose_logging = True
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = self.cache.get(self.home)
+            cached = self.cache.get(self.home)
+        self.assertEqual(quiet, result)
+        self.assertTrue(cached['cached'])
+        records = [json.loads(line.split('Envelope diagnostics ',1)[1]) for line in output.getvalue().splitlines()]
+        stages = {record['stage'] for record in records}
+        self.assertTrue({'snapshot_copy_completed', 'window_aggregation_completed', 'bearing_calculation_completed', 'generation_completed', 'cache_hit'} <= stages)
+        self.assertEqual(len({record['job_id'] for record in records}), 2)
+
+    def test_sql_aggregation_matches_row_path_across_months(self):
+        from density_archive import window_cells
+        from traffic_density import FIELDS
+        self.store.flush(True)
+        cell = cell_id(41,self.lon)
+        # Shared cell in multiple months, mixed complete/legacy history and NULL altitudes.
+        for month, day, complete, first, minimum, maximum in (
+            ('2026-09','2026-09-30',1,1.0,None,None),
+            ('2026-10','2026-10-01',0,None,400,900),
+            ('2026-10','2026-10-02',1,3.0,600,1200)):
+            db = self.store._db(month)
+            db.execute('INSERT INTO daily VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       (cell,day,7,2,1,2,3,1,minimum,maximum,first,4.0,complete))
+            db.commit()
+        start,end='2026-09-30','2026-10-06'
+        def rows(sql):
+            with window_cells(self.store,start,end,sql_base_cells=sql) as (_,db,_):
+                return [dict(row) for row in db.execute('SELECT * FROM daily ORDER BY cell')]
+        self.assertEqual(rows(False),rows(True))
+        with patch('density_envelopes.window_cells',
+                   side_effect=lambda *args,**kwargs: window_cells(*args,**{**kwargs,'sql_base_cells':False})):
+            expected=EnvelopeCache(self.store,clock=lambda:NOW).get(self.home,start,end)
+        actual=EnvelopeCache(self.store,clock=lambda:NOW).get(self.home,start,end)
+        self.assertEqual(actual,expected)
+        self.assertEqual(sum(b['observation_count'] for b in actual['products']['all']['bins']),25)
+
+    def test_saved_restart_age_force_and_failed_replacement(self):
+        first=self.cache.get(self.home)
+        restarted=EnvelopeCache(self.store,clock=lambda:NOW+43201)
+        with patch('density_envelopes.window_cells',side_effect=AssertionError('load must not aggregate')):
+            info=restarted.saved(self.home,status_only=True)
+            self.assertTrue(info['available']);self.assertTrue(info['refresh_recommended'])
+            loaded=restarted.saved(self.home)
+            self.assertEqual(loaded['products'],first['products'])
+            with self.assertRaises(AssertionError):restarted.get(self.home,force=True)
+        self.assertEqual(restarted.saved(self.home)['products'],first['products'])
+        self.assertFalse(restarted.saved({**self.home,'longitude':1},status_only=True)['available'])
+        self.assertFalse(restarted.saved(self.home,status_only=True,start='2026-01-01')['available'])
+        with patch('density_envelopes.os.replace',side_effect=OSError('disk failure')):
+            with self.assertRaises(OSError):self.cache.get(self.home,force=True)
+        self.assertEqual(restarted.saved(self.home)['products'],first['products'])
+        with patch('density_envelopes.window_cells',side_effect=AssertionError('forced build')):
+            with self.assertRaises(AssertionError):self.cache.get(self.home,force=True)
+        self.store.restore(self.store.export())
+        self.assertFalse(restarted.saved(self.home,status_only=True)['available'])
+        self.cache.get(self.home,force=True)
+        self.store.clear()
+        self.assertFalse(restarted.saved(self.home,status_only=True)['available'])
+
+    def test_saved_survives_store_reopen(self):
+        expected=self.cache.get(self.home)
+        self.store.close()
+        self.store=DensityStore(self.temp.name,clock=lambda:NOW,source_type='sbs_30003')
+        service=EnvelopeCache(self.store,clock=lambda:NOW+60)
+        loaded=service.saved(self.home)
+        self.assertEqual(loaded['products'],expected['products'])
+        self.assertEqual(loaded['age_seconds'],60)
+
+    def test_build_allows_retention_prune_before_snapshot(self):
+        original=self.store.prune
+        called=False
+        def prune_once():
+            nonlocal called
+            original()
+            if not called:
+                self.store.restore_epoch+=1
+                called=True
+        with patch.object(self.store,'prune',side_effect=prune_once):
+            built=self.cache.get(self.home,force=True)
+        self.assertTrue(called)
+        self.assertEqual(self.cache.saved(self.home)['products'],built['products'])
+
+    def test_malformed_saved_result_is_unavailable(self):
+        path=self.store.directory/'last-envelope.json'
+        for value in ([],{'saved_schema':1,'source':'sbs_30003','home':self.home,'payload':[]}):
+            path.write_text(json.dumps(value))
+            self.assertFalse(self.cache.saved(self.home,status_only=True)['available'])
+            with self.assertRaises(ValueError):self.cache.saved(self.home)
+
     def tearDown(self):
         self.store.close();self.temp.cleanup()
 
@@ -90,6 +186,25 @@ class DensityEnvelopeHttpTests(bridge_tests.DensityBridgeTests):
     test_http_routes_restore_and_errors=None
     test_source_titles_range_controls_and_export_filenames=None
     test_tfms_skips_coverage_worker_and_loading=None
+
+    def test_saved_envelope_http_load_status_and_faa_denial(self):
+        bridge.collect_density([self.ac],NOW)
+        original=bridge.home_marker
+        try:
+            bridge.home_marker={'latitude':41,'longitude':-77}
+            code,info=self.request('/traffic-density/envelopes?action=status')
+            self.assertEqual(code,200);self.assertFalse(info['available'])
+            self.assertEqual(self.request('/traffic-density/envelopes?action=load')[0],400)
+            code,built=self.request('/traffic-density/envelopes?action=build')
+            self.assertEqual(code,200)
+            code,loaded=self.request('/traffic-density/envelopes?action=load')
+            self.assertEqual(code,200);self.assertEqual(loaded['products'],built['products'])
+            self.assertTrue(self.request('/traffic-density/envelopes?action=status')[1]['available'])
+            bridge.CFG['source']='swim_sfdps'
+            for action in ('status','load','build'):
+                self.assertEqual(self.request('/traffic-density/envelopes?action='+action)[0],403)
+        finally:
+            bridge.home_marker=original;bridge.CFG['source']='sbs_30003'
 
     def test_envelope_routes_gap_geometry_and_tfms_label(self):
         bridge.collect_density([self.ac],NOW)

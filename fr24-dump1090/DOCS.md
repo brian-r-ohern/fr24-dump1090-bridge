@@ -1,8 +1,8 @@
 # FR24 dump1090 Bridge — Home Assistant
 
-## v0.7.0 operation
+## v0.7.1 operation
 
-The map offers an immediate **Auto / Light / Dark** theme selector. Destination popups may show a direct-distance/current-ground-speed ETA and, for qualifying aircraft, a separately labeled **experimental** modeled arrival range. Motion classifications and activity coloring depend on source quality; TFMS and coarse `flights.js` reports are excluded. Traffic density uses cached tiles and daily rollups. See the [changelog](CHANGELOG.md) for development history and the `docs/` testing records for validation.
+The map offers an immediate **Auto / Light / Dark** theme selector. Destination popups may show a direct-distance/current-ground-speed ETA and, for qualifying aircraft, a separately labeled **experimental** modeled arrival range. Motion classifications and activity coloring depend on source quality; TFMS and coarse `flights.js` reports are excluded. Traffic density uses cached tiles and daily rollups. Density envelopes use optimized SQL aggregation and bounded NumPy batches; separate Load/Build controls preserve the last successful set across restarts. See the [changelog](CHANGELOG.md) for development history and the `docs/` testing records for validation.
 
 ## Configuration
 
@@ -111,7 +111,10 @@ The app declares container port 8085 with no host mapping by default. If a clien
 - `/traffic-density/export` — density JSON backup (optional `?month=YYYY-MM`)
 - `POST /traffic-density/import` — validated density restore
 - `/traffic-density.geojson` — spatial density export
-- `/traffic-density/envelopes` — density-derived range comparison
+- `/traffic-density/envelopes` — density-derived range comparison; legacy requests retain the short-lived calculation cache.
+- `/traffic-density/envelopes?action=build` — explicitly rebuild and save the selected/default date window, bypassing the calculation cache.
+- `/traffic-density/envelopes?action=load` — load the saved result without rebuilding; returns 400 when no matching set exists.
+- `/traffic-density/envelopes?action=status` — saved availability, age, timestamp and date window; does not build. These envelope routes are disabled for FAA sources.
 - `/traffic-density/envelopes.geojson` — range-comparison GeoJSON export
 - `/range-coverage-baseline` — preserved 1° baseline, when available
 - `POST /data/clear` — confirmed selective or all-source data clearing
@@ -218,7 +221,7 @@ The static sidebar title is Aircraft Bridge. Traffic Density supports Low/Middle
 
 ## Density refresh and data management
 
-Traffic density loads once when enabled. Pan, zoom or change altitude selections, then press **Refresh density** beside **Fit aircraft**. The previous layer remains visible while loading. The result shows the actual density grid zoom, cell count and elapsed time. Collection continues at zoom 17 regardless of layer visibility; radial coverage remains 0.5° / 720 bins. Indexed viewport filtering avoids aggregating off-screen history. Small interactive results may reuse an all-band aggregate for up to 30 seconds; full exports always read the stored history.
+Traffic density loads once when enabled. After panning, zooming or changing altitude selections, a fully cached fresh view loads automatically; otherwise use **Load density** or **Refresh now** beside **Fit aircraft** as indicated. The previous layer remains visible while loading. The compact result shows the date window, selected bands, cell count, timestamp and cached/to-build/stale tile inventory. Collection continues at zoom 17 regardless of layer visibility; radial coverage remains 0.5° / 720 bins. Indexed viewport queries and parent daily rollups accelerate uncached views; density tiles can be reused for up to two hours. Full exports read stored history rather than the displayed tile snapshot.
 
 ### Large density restores outside Ingress
 
@@ -248,7 +251,7 @@ Export backups first. Individual actions require typing `CLEAR`; the all-data ac
 
 ## Settings recovery and compact controls
 
-The map places **Density altitude selection** and **Density envelopes · comparison** side by side. Expand either or both independently. On small screens they stack. **Refresh density** sits beside **Fit aircraft** and reloads the heat cells for the current viewport and selected altitude bands. **Generate envelopes** builds the separate density-derived range outlines. Panning, zooming, or changing altitude bands still marks the heat view pending until you refresh it. **Range ring** stays on the main toolbar.
+The map places **Density altitude selection** and **Density envelopes · comparison** side by side. Expand either or both independently. On small screens they stack. **Load density** sits beside **Fit aircraft** and loads the heat cells for the current viewport and selected altitude bands; **Refresh now** explicitly rebuilds visible density tiles. **Build envelopes** generates the separate density-derived range outlines and **Load envelopes** retrieves the last saved build. Pending heat views load automatically when all required tiles are fresh and cached; missing/stale tiles require the corresponding Load/Refresh action. **Range ring** stays on the main toolbar.
 
 Status-page endpoints have a green border; the three density, envelope, and range export sections have yellow borders. The red Danger Zone follows the complete Diagnostics section, including the tile endpoint description.
 
@@ -272,11 +275,20 @@ Implementation references: [public App configuration folder](https://developers.
 
 ## Data-operation logging
 
-App logs record timestamped starts and outcomes for density/range imports, data exports, envelope generation, and Danger Zone clears. Entries include the selected source and dataset, elapsed seconds, HTTP status, available merge/bin/feature counts, clear target, and input/response byte counts where applicable. Failed requests and disconnected transfers are distinguished from completed responses. Response completion means the server sent the export, not proof that a browser saved it to disk.
+App logs record timestamped starts and outcomes for density/range imports, data exports, envelope generation and saved loads, and Danger Zone clears. Entries include the selected source and dataset, elapsed seconds, HTTP status, available merge/bin/feature counts, clear target, and input/response byte counts where applicable. Failed requests and disconnected transfers are distinguished from completed responses. Response completion means the server sent the export, not proof that a browser saved it to disk.
 
 Routine heat-map queries retain their existing timing diagnostics. Automatic five-second range polling is excluded from export audit logs; range JSON download links use `?download=1` to identify explicit exports. Direct `/range-coverage` API reads remain polling reads unless that marker is supplied. Logs do not include feed credentials, configuration contents, or URL query strings.
 
-After restoring or clearing data on the status page, reload the map to discard its displayed snapshot. For heat cells, use Refresh density; for an already generated envelope comparison, use Generate envelopes again. Collection continues after a clear, so new observations can begin accumulating immediately.
+After restoring or clearing data on the status page, reload the map to discard its displayed snapshot. For heat cells, use Load density or Refresh now; for envelope comparisons, use Build envelopes again because import/clear invalidates the saved set. Collection continues after a clear, so new observations can begin accumulating immediately.
 
 Port mappings and Show in sidebar remain outside the settings snapshot. After changing a Network port mapping in Home Assistant, restart the App to apply it.
 
+
+
+## Saved density envelopes
+
+Use **Build envelopes** to generate a new 30-day comparison, and **Load envelopes** to display the last successful saved build. Saved builds survive restarts. The age next to Load recommends refresh after 12 hours; older builds remain loadable. Source and Home must match. Importing or clearing density history invalidates the saved result.
+
+Saved envelope builds are derived data. Normal new observations do not invalidate them; the displayed age identifies the snapshot. The saved UTC date window remains visible and is not silently shifted at midnight. There is one saved set per source, including when a custom date-window build replaces it. Range coverage remains independent.
+
+With `verbose_logging` enabled, `[DEBUG] Envelope diagnostics` reports a per-request ID, lock waits, snapshot bytes/copy time, SQL aggregation VM steps and grouped-cell counts, NumPy batch/cell counts, and stage elapsed times. Ordinary Data operation entries report total HTTP time. Build is still synchronous: large histories can take more than a minute and a client/proxy timeout does not cancel server work. Load does not perform the expensive calculation. Temporary snapshot/aggregation files require free disk space proportional to the stored history.
