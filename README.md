@@ -16,6 +16,7 @@ FR24 dump1090 Bridge functions as a lightweight, non-invasive local aircraft-dat
 The recommended/default input is a receiver's SBS/BaseStation TCP feed on port `30003`. An authenticated FR24 `/flights.js` feed or an existing dump1090/readsb `aircraft.json` feed can be selected as mutually exclusive alternatives. An FR24 receiver is therefore not required when a compatible `aircraft.json` source is already available. Authorized FAA SWIM TFMS and SFDPS are local-view-only alternatives; automatic FAA aircraft-feed routes remain disabled, while deliberate local analytical downloads are supported.
 
 ## New in v0.7.2
+<img width="1535" height="180" alt="image" src="https://github.com/user-attachments/assets/e55170d6-77da-4574-b7d0-cd5fa6349783" />
 
 * **Repeated motion geometry:** constant-radius turns, orbit candidates, repeated orbits, course reversals and racetrack/holding-like patterns, with supporting evidence and duration.
 * **Local track history:** a rolling hour of sampled observations, selected-aircraft trails and compressed GeoJSON exports for selected/all tracks. Selected downloads include the reported ICAO hex, with a local-ID fallback. GeoJSON display has been tested in QGIS.
@@ -25,11 +26,6 @@ The recommended/default input is a receiver's SBS/BaseStation TCP feed on port `
 * **Touchdown estimates:** experimental modeled touchdown scenarios can respond to sustained observed descent.
 
 Motion and prediction thresholds remain experimental. Observations do not establish flight intent, a confirmed diversion, or unsafe separation. Go-around detection, formation analysis and richer composite sequences remain future work. Analytical history is transient and clears on restart. Deliberate local FAA analytical downloads are supported; automatic FAA aircraft-feed bridging remains disabled.
-
-
-
-<img width="1535" height="180" alt="image" src="https://github.com/user-attachments/assets/e55170d6-77da-4574-b7d0-cd5fa6349783" />
-
 
 
 ## Home Assistant installation
