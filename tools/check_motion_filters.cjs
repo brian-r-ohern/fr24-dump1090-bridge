@@ -15,3 +15,11 @@ selected=[];run('applyMotionView()');assert.equal(visible.size,0);assert.equal(c
 selected=['all'];clock+=16000;run('applyMotionView()');assert.equal(nodes['motion-count-stale'].textContent,3);assert.equal(nodes['motion-count-descending'].textContent,0);assert.equal(nodes.a.icon.motionColor,null);
 ctx.inputSource='swim_tfms';selected=[];run('applyMotionView()');assert.equal(visible.size,3);assert(nodes['motion-options'].hidden);
 console.log('PASS any-label filters, empty/all selections, viewport fit, counts, priority colors, badges, local freshness and source exclusion');
+
+// Geometry labels share the any-label filters and take color precedence.
+run("inputSource='sbs_30003'; motionStates.a={quality:'supported',position_age_seconds:0,fetched_at:Date.now()/1000,primitives:[{name:'descending'}],patterns:[{name:'racetrack',status:'established'}]}");
+assert(run("motionLabels('a')").includes('racetrack'));
+assert(run("matchesMotion('a',['racetrack'])"));
+assert.equal(run("motionColor('a',true)"),'#ef80e6');
+clock+=16000;assert(!run("motionLabels('a')").includes('racetrack'));
+console.log('PASS geometry filtering, color precedence and stale suppression');

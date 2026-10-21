@@ -1,6 +1,10 @@
+> Dev.6 clarification: deliberate local density, envelope and history downloads are enabled for FAA sources. Automatic aircraft-feed bridging remains disabled. Historical restrictions below are superseded by dev.6.
+
+> Current dev.2 additions: selected trails, sampled analytical history/export across sources, offline motion replay, geometry diagnostics, trusted-network access and observed-descent arrival scenarios. [Exact behavior and validation](v0.7.2-dev.2-testing.md). Earlier no-FAA-history/export statements below describe the prior build; dev.2 permits deliberate analytical history downloads while automatic FAA feed bridging remains disabled.
+
 # Motion Analytics — Living Engineering Notes
 
-Status: living implementation/design notes, updated October 16, 2026. v0.7.1 includes the envelope increments documented below; geometric pattern detectors remain planned. Companion to [the v0.7 roadmap](motion-pattern-roadmap.md). This document records mathematical definitions, candidate heuristics, validation results and decisions as each increment is built. The basic motion engine and primitives are implemented in 0.7.0-dev.1; circle fitting and pattern grammar here remain reference designs. See [Implemented motion primitives](motion-primitives-v0.7.0-dev.1.md) for the actual preview formulas, thresholds, timings and limits. Thresholds below are experiments, not frozen defaults.
+Status: living implementation/design notes, updated October 17, 2026. v0.7.1 includes the envelope increments documented below; the first experimental geometric detectors are implemented in v0.7.2-dev.1; later pattern work remains planned. Companion to [the v0.7 roadmap](motion-pattern-roadmap.md). This document records mathematical definitions, candidate heuristics, validation results and decisions as each increment is built. The basic motion engine and primitives are implemented in 0.7.0-dev.1; circle fitting and pattern grammar here remain reference designs. See [Implemented motion primitives](motion-primitives-v0.7.0-dev.1.md) for the actual preview formulas, thresholds, timings and limits. Thresholds below are experiments, not frozen defaults.
 
 ## Pipeline and contracts
 
@@ -12,7 +16,7 @@ Status: living implementation/design notes, updated October 16, 2026. v0.7.1 inc
 | Pattern grammar | Primitive sequence plus observed geometry | Candidate orbit, racetrack, parallel passes, figure-eight | Sequence alone is insufficient; test geometry and repetition |
 | Geometric patterns | Supported candidates over time | Provisional/established/exited result with evidence | Intent and mission remain separate interpretations |
 
-Increment 0.7.0 establishes the first three contracts. Increment 0.7.1 delivers envelope performance and persistence; planned increment 0.7.2 evaluates individual geometry. Later increments add destination divergence, pair predictions and formations without replacing these contracts.
+Increment 0.7.0 establishes the first three contracts. Increment 0.7.1 delivers envelope performance and persistence; increment 0.7.2-dev.1 begins individual geometry evaluation. Later increments add destination divergence, pair predictions and formations without replacing these contracts.
 
 ## 1. Observation time and continuity
 
@@ -379,3 +383,111 @@ A saved rolling window remains loadable after midnight and beyond 12 hours; the 
 6. An old saved set remains loadable; after 12 hours age indicates Refresh recommended.
 
 Automated tests cover persistence after store reopen, age threshold, forced build, failed build/atomic replacement, source/Home/window matching, history invalidation and HTTP/FAA restrictions.
+
+
+## v0.7.2-dev.1 — implemented repeated geometry
+
+See [Implemented geometry rules](motion-geometry-v0.7.2-dev.1.md) for the exact history bounds, projection, chord/rate segmentation, circle fit, turn-center recurrence, one/two-circuit grammar, precedence, exits, lifecycle and uncalibrated evidence scoring. That document is authoritative for this dev build; earlier circle/grammar sections in these notes remain design context.
+
+Raw source timestamps and continuity gates feed a separate one-hour/360-sample transient geometry history. Basic primitive windows remain unchanged. A 50-NM-leg repeated-racetrack synthetic test fits within that hour; patterns taking longer are a documented limit. Source gaps, discontinuities, flight-occurrence and ground transitions clear geometry. Minute logs include candidate/established counts, and popups expose supporting measurements.
+
+The experimental arrival label is now Estimated touchdown · modeled, and observed orbit/racetrack defers its direct-arrival scenarios. Go-around-like detection is deferred until approach context is defined; no current label establishes aircraft intent, an ATC hold or a missed approach.
+
+
+## v0.7.2-dev.4: airport context, compression and replay findings
+
+See [dev.4 design and validation](v0.7.2-dev.4-testing.md) for exact airport-context gates, compression/API compatibility and captured-record replay findings. Geometry remains independent of tentative airport activity; no new holding intent or go-around classifier is claimed. Whole-loop recognition with interrupted/variable-radius turns remains future work. ETT logic is unchanged in dev.4.
+
+History buttons now export selected/all retained aircraft as JSON.gz. Density backups stream JSON.gz and restore accepts JSON or gzip. Offline history replay accepts JSON, gzip and a ZIP containing one JSON file. Existing retention, source attribution and network access rules remain.
+
+
+## v0.7.2-dev.5 — popup state
+
+Live marker popup HTML replacement captures native details state under stable section identifiers, restores matching sections before replacement, then restores content scroll and summary focus. The per-marker map retains temporarily missing section state. It is transient and does not change classification or prediction logic. See [dev.5 validation](v0.7.2-dev.5-testing.md).
+
+
+## v0.7.2-dev.6 — explicit analytical downloads
+
+FAA data products may be deliberately downloaded for local retention and analysis, including source-isolated density archives, derived GeoJSON and envelopes. Automatic aircraft feed outputs stay blocked. See [endpoint boundaries](v0.7.2-dev.6-testing.md). This corrects the earlier blanket restriction; historical preview notes may describe superseded behavior.
+
+
+## v0.7.2-dev.7 — SBS recovery and selected proximity preview
+
+The selected-aircraft proximity/CPA preview has been brought forward from the later roadmap milestone for evaluation. It does not complete all-pairs encounter detection. See [exact rules and validation](v0.7.2-dev.7-testing.md) for source-time alignment, altitude reference gates, bounded horizon, model quality, UI, endpoint and replay behavior. SBS byte-idle recovery reconnects silent sessions after 60 seconds.
+
+## Dev.8: reusable sequence vocabulary and partial observations
+
+The objective is enthusiast discovery of interesting kinematics. A "possible
+maneuver" describes resemblance to observed behavior, without asserting pilot
+intent, ATC instruction, safety status, or a reason for a turn. Derived geometry
+may itself serve as a primitive in a higher-order sequence; primitive is relative
+to the composition level. Existing primitives and geometry retain their rules.
+
+Proposed sequence operators: `+` overlapping evidence (AND), `~` alternatives
+(OR), `-` followed by, and PROX/DPROX airport/destination context. Implementations
+must define allowable overlap, order, stage duration, maximum inter-stage delay,
+repetition and exit conditions rather than interpreting notation as exact text
+matching. Turns may be embedded in climbing/descending phases without destroying
+the larger sequence. Airport identifiers must normalize aliases; metadata is
+supporting context, not a constraint proving the physical origin or destination.
+
+| Candidate | Supporting observed sequence |
+| --- | --- |
+| Possible departure / climb-out | Airport proximity, accelerating climb, optionally turning, then level/steady flight |
+| Possible approach | Descent and slowing, optional turns/reversal, inbound progress near airport |
+| Holding-like | Repeated orbit or reciprocal-leg/racetrack geometry |
+| Path-stretching-like | Alternating turns and an extended flown path toward the destination |
+| Go-around-like | Approach-like descent followed by supported climb near airport |
+| Possible traffic-pattern activity | Repeated airport-adjacent circuits |
+
+Each definition must distinguish required anchors from optional stages. Missing
+prehistory is **unobserved**, not proof that a stage happened and not evidence
+that it did not. A partial candidate needs positive observed anchors plus context;
+contradictory evidence can reject it. Export evidence intervals, observed and
+unobserved stages, completeness and candidate status. Do not invent calibrated
+probabilities. Initial acquisition, gaps and rolling-window truncation must be
+represented separately from a completed maneuver or actual takeoff/landing.
+
+Captured examples supplied by the user: DAL1410 KBOS-KAUS begins at 1,700 ft,
+accelerates/climbs, includes a left dogleg and reaches steady 34,000-ft flight;
+it supports a partial departure sequence without recorded takeoff. DAL473 and
+RPA5663 approach Boston via a southbound leg, right reversal and approximately
+021-degree inbound descent. A first-pass scan of the Oct19 hour found nine
+Boston-bound tracks with both southbound and northeast inbound geometry. This
+supports a shared structural candidate; it is not nine established holding
+patterns or independent validation of new rules. Several aircraft each flying
+one turn must not be confused with one aircraft repeating a racetrack.
+
+These are design foundations for later composite detection. Dev.8 does not add
+new composite classifiers. See v0.7.2-dev.8-testing.md for implemented export,
+proximity, source-switch and watchdog behavior and exact validation limits.
+
+### Destination-relative movement (next development build)
+
+The last non-null reported destination is retained across sparse updates. Each
+history observation records its destination code. A code change, segment break,
+or stale motion state prevents evidence from carrying across the boundary.
+An airport lookup must resolve the code; altitude and aircraft type are not required.
+A least-squares fit of great-circle destination range over the last 120 seconds
+requires five observations spanning at least 60 seconds. Radial speeds at or
+below -30 kt are inbound; at or above +30 kt are outbound. The intermediate
+category is crossing (little radial movement), not proof of crossing a route.
+Sustained movement away additionally requires ten observations spanning at least
+180 seconds within 300 seconds, a net range gain of 2 NM, and range gains greater
+than 0.01 NM on at least 80 percent of observation intervals. Established
+racetrack or repeated-orbit geometry anywhere within that evidence window
+suppresses divergence. Candidate geometry alone does not suppress it.
+This describes observed movement relative to a reported destination, not a
+confirmed diversion or clearance. Popup and retained analytical history include
+the result and suppression flag. Existing history without per-observation
+ destination codes must warm up with new observations.
+
+### v0.7.2 final presentation and proximity limit
+
+The UI presents inbound/outbound as Moving toward/Moving away alongside the
+destination; crossing is Little change in distance. Internal analytical keys
+remain unchanged. The final selected-aircraft proximity radius is 10 NM
+horizontal, with at most ten results ranked by approximate slant range.
+User validation confirmed dev.9 checks; rare pattern detections remain subject
+to further field evaluation. Final radius regression coverage: 13 tests passed.
+The full pre-radius dev.9 suite passed 195 tests. The v0.7.2 release includes these final changes.

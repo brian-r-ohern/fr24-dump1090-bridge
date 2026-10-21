@@ -1,4 +1,85 @@
+# v0.7.2 — 2026-10-21 (Stable Release)
+
+Consolidates v0.7.2 development builds 1–9, plus the final 10 NM proximity
+limit, clearer destination movement labels, and README hard-refresh reminder.
+
+- **Repeated motion geometry:** constant-radius turns, orbit candidates, repeated orbits, course reversals and racetrack/holding-like patterns, with supporting evidence and duration.
+- **Local track history:** a rolling hour of sampled observations, selected-aircraft trails and compressed GeoJSON exports for selected/all tracks. Selected downloads include the reported ICAO hex, with a local-ID fallback. GeoJSON display has been tested in QGIS.
+- **Nearby aircraft:** up to ten neighbors within 10 NM horizontally, ordered by approximate slant range, with horizontal/vertical separation, horizontal closing speed and five-minute constant-velocity CPA/TCPA estimates where supported.
+- **Destination movement:** Moving toward / Moving away labels relative to the last reported destination; sustained movement-away evidence is suppressed during established racetrack/repeated-orbit geometry. Destination metadata age is explicitly unknown.
+- **Usability and recovery:** expanded popup sections persist through updates, map controls collapse, source changes reload the map, and SBS byte-idle/status-only sessions reconnect.
+- **Touchdown estimates:** experimental modeled touchdown scenarios can respond to sustained observed descent.
+
+Motion and prediction thresholds remain experimental. Observations do not establish flight intent, a confirmed diversion, or unsafe separation. Go-around detection, formation analysis and richer composite sequences remain future work. Analytical history is transient and clears on restart. Deliberate local FAA analytical downloads are supported; automatic FAA aircraft-feed bridging remains disabled.
+
+# v0.7.2-dev.9 — 2026-10-21 (development preview)
+
+- Limit selected-aircraft proximity to 10 NM horizontal range; retain nearest-ten slant ordering.
+- Add destination-relative inbound/crossing/outbound observations and sustained movement away, with established racetrack/repeated-orbit suppression.
+- Preserve last reported destination across sparse updates and reset movement evidence on destination changes or analytical breaks.
+- Include reported ICAO hex (or local track ID fallback) in selected-track GeoJSON filenames.
+- Retain all dev.8 GeoJSON, proximity, and SBS recovery improvements.
+- Destination metadata freshness remains unknown; this is not a confirmed diversion classifier.
+
+# v0.7.2-dev.8 — 2026-10-21 (development preview)
+
+- Replace selected/all analytical history downloads with lossless `.geojson.gz` exports; retain full records and GIS-friendly identity attributes, split geometry at gaps, and read both new and legacy exports in replay tools.
+- Identify the selected aircraft in proximity results; show approximate slant range and rank before the ten-track limit. Replace trend-only display with horizontal closure speed.
+- Reload the map on detected source changes before reporting an obsolete raw-feed endpoint error.
+- Reconnect status-only SBS sessions after 60 seconds without a successfully parsed aircraft MSG, alongside the existing byte-idle watchdog.
+- Document hierarchical possible-maneuver composition and partial observations; no new composite classifiers or proximity halos in this build.
+
+# v0.7.2-dev.7 — 2026-10-18 (development preview)
+
+- Reconnect SBS sessions after 60 seconds of byte-level silence; bound unterminated input buffers and retain retry diagnostics.
+- Add selected-aircraft proximity with horizontal/vertical separation and closing/opening trend.
+- Add common-time-aligned, five-minute constant-velocity horizontal CPA/TCPA with matching-reference vertical projection, stale/missing-data gates and maneuvering quality labels.
+- Add chronological proximity replay and synthetic/UI regression coverage; retain analytical export and popup fixes.
+
+# v0.7.2-dev.6 — 2026-10-18 (development preview)
+
+- Corrected leftover FAA density/export restrictions: deliberate density JSON/gzip, GeoJSON and envelope downloads are available for local analysis.
+- Restored corresponding status-page controls; automatic aircraft-feed routes remain blocked.
+- Added FAA-source gzip/download and network-isolation regressions; retained dev.5 popup behavior.
+
+# v0.7.2-dev.5 — 2026-10-18 (development preview)
+
+- Preserve expanded/collapsed aircraft popup sections across live refreshes, separately per aircraft.
+- Restore popup scroll position and summary keyboard focus after updating content.
+- Add popup-refresh behavior regression checks; retain dev.4 features unchanged.
+
+# v0.7.2-dev.4 — 2026-10-18 (development preview)
+
+- Added lossless gzip history and streaming density downloads, gzip density restore and JSON/gzip/ZIP history replay inputs.
+- Renamed Export hour to Export all; selected export remains available.
+- Added conservative airport context alongside geometry using route, proximity, altitude and observed motion; context does not alter ETT.
+- Reviewed captured EIN107/FIN15 maneuvers through replay; retained geometry thresholds and documented interrupted-turn limitations and regression cases.
+- Added compression/context tests and updated engineering/testing notes. Retained dev.3 startup repair.
+
+# v0.7.2-dev.3 — 2026-10-17 (startup repair)
+
+- Fixed dev.2 startup rejecting `trusted_networks` as an unsupported settings field and incorrectly entering recovery before feed connection.
+- Synchronized manifest/recovery defaults and added complete-options bootstrap regression tests.
+- Normalized legacy SWIM product in saved snapshots from selected source; refreshed recovery build labels.
+- Preserved dev.2 history/trail/export and descent-model features.
+
+# v0.7.2-dev.2 — 2026-10-17 (development preview)
+
+- Added sampled one-hour aircraft history, selected trails, highlighted geometry support, and deliberate JSON downloads for every source, including SFDPS.
+- Added offline motion replay, geometric rejection diagnostics and lifecycle counters; retained dev.1 detection thresholds.
+- Made modeled touchdown respond to sustained observed descent with bounded rates and explicit arrival level-off allowances.
+- Added configurable trusted-network peer checks for HTTP access; FAA automatic bridging remains disabled.
+- Documented analytical export policy, provenance, retention limits, replay differences and validation steps.
+
 # Changelog
+
+## v0.7.2-dev.1 — 2026-10-16 (Local development preview)
+
+- Add bounded transient geometry history and experimental constant-radius turn/orbit, repeated orbit, reversal and racetrack/holding-like detectors. Candidate/established results expose evidence and uncalibrated scores.
+- Add geometry filters, color precedence, popup evidence and aggregate pattern logs. Reset on gaps/discontinuities/ground transitions; suppress stale patterns.
+- Add collapsible Map controls panel. Rename the experimental modeled estimate to Estimated touchdown; defer it during observed orbit/racetrack.
+- Document implemented heuristics, synthetic tests, live-test requirements and limits. Go-around-like detection is not yet implemented.
+
 
 ## v0.7.1 — 2026-10-16
 

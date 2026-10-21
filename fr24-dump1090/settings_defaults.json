@@ -1,4 +1,8 @@
 {
+  "map_theme": "auto",
+  "trusted_networks": "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7",
+  "verbose_logging": false,
+  "dashboard_integration": false,
   "source": "sbs_30003",
   "receiver_host": "",
   "username": "",
@@ -18,15 +22,12 @@
   "request_timeout": 3,
   "aircraft_json_poll_interval": 1,
   "enrichment_source": "adsb_tracker",
+  "tracker_aircraft_entity": "sensor.adsb_all_aircraft",
+  "tracker_closest_entity": "sensor.adsb_closest_aircraft",
+  "tracker_military_entity": "sensor.adsb_military_aircraft_details",
   "swim_product": "tfms",
   "swim_radius_nm": 250,
   "swim_aircraft_timeout": 120,
   "swim_retry_count": 3,
-  "swim_retry_interval_ms": 3000,
-  "dashboard_integration": false,
-  "tracker_aircraft_entity": "sensor.adsb_all_aircraft",
-  "tracker_closest_entity": "sensor.adsb_closest_aircraft",
-  "tracker_military_entity": "sensor.adsb_military_aircraft_details",
-  "verbose_logging": false,
-  "map_theme": "auto"
+  "swim_retry_interval_ms": 3000
 }

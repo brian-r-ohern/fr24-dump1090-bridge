@@ -1,5 +1,5 @@
 name: "FR24 dump1090 Bridge"
-version: "0.7.1"
+version: "0.7.2"
 slug: "fr24_dump1090"
 description: >-
   Normalizes a selected local aircraft data source into
@@ -28,6 +28,7 @@ ports_description:
   8085/tcp: "FR24 dump1090 bridge HTTP service (optional LAN exposure)"
 options:
   map_theme: "auto"
+  trusted_networks: "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7"
   verbose_logging: false
   dashboard_integration: false
   source: "sbs_30003"
@@ -60,6 +61,7 @@ options:
 
 schema:
   map_theme: "list(auto|light|dark)?"
+  trusted_networks: str?
   verbose_logging: bool?
   dashboard_integration: bool?
   source: "list(sbs_30003|flights_js|aircraft_json|swim_tfms|swim_sfdps)"

@@ -1,0 +1,10 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const html=fs.readFileSync(process.argv[2],'utf8');
+const start=html.indexOf('function motionStateHtml('),end=html.indexOf('function popup(',start);
+const state={quality:'supported',position_age_seconds:0,primitives:[],metrics:{},patterns:[{name:'racetrack',status:'established',duration_seconds:900,confidence:.85,evidence:{cycles:2,turns:4}}]};
+const ctx=vm.createContext({Math,Number,Object,Date,inputSource:'sbs_30003',motionFreshSeconds:15,currentMotionState:()=>state,esc:String});
+vm.runInContext(html.slice(start,end),ctx);let output=vm.runInContext("motionStateHtml('a')",ctx);
+assert(output.includes('Racetrack / holding-like'));assert(output.includes('established'));assert(output.includes('uncalibrated'));assert(output.includes('cycles: 2'));
+state.quality='stale';output=vm.runInContext("motionStateHtml('a')",ctx);assert(!output.includes('Racetrack / holding-like'));
+assert(html.includes('Estimated touchdown · modeled'));assert(html.includes('id="map-controls" open'));assert(html.includes('<summary>Map controls</summary>'));
+console.log('PASS geometry evidence popup, stale suppression, touchdown label and collapsible controls');

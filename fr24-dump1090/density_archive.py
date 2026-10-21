@@ -4,6 +4,9 @@ One cell/month record is decoded at a time (maximum 1 MiB). Upload size is
 bounded by available disk, not by the old 256 MiB RAM limit. No extra packages.
 """
 import codecs
+import gzip
+import shutil
+import io
 import json
 import sqlite3
 import tempfile
@@ -104,6 +107,35 @@ class JsonReader:
 
 
 def restore_stream(store, stream, length, legacy_source=None):
+    """Accept JSON or gzip; stage decompression on disk before existing validation."""
+    # Limit compressed reads to Content-Length: never wait for the next HTTP request.
+    prefix = stream.read(min(2, length))
+    if len(prefix) != min(2, length):
+        raise ValueError('incomplete upload')
+    class Limited:
+        def __init__(self): self.prefix, self.remaining = prefix, length-len(prefix)
+        def read(self, size=-1):
+            size = 65536 if size < 0 else size
+            head, self.prefix = self.prefix[:size], self.prefix[size:]
+            count = min(size-len(head), self.remaining)
+            tail = stream.read(count) if count else b''
+            if count and not tail: raise ValueError('incomplete upload')
+            self.remaining -= len(tail)
+            return head+tail
+    limited = Limited()
+    if prefix == b'\x1f\x8b':
+        with tempfile.TemporaryFile(dir=store.directory) as staged:
+            try:
+                with gzip.GzipFile(fileobj=limited) as decoded:
+                    shutil.copyfileobj(decoded, staged, length=65536)
+            except (OSError, EOFError) as exc:
+                raise ValueError('Invalid or incomplete gzip density archive') from exc
+            size = staged.tell(); staged.seek(0)
+            return _restore_json_stream(store, staged, size, legacy_source)
+    return _restore_json_stream(store, limited, length, legacy_source)
+
+
+def _restore_json_stream(store, stream, length, legacy_source=None):
     today = datetime.fromtimestamp(store.clock(), timezone.utc).date()
     with tempfile.TemporaryDirectory(prefix='.restore-', dir=store.directory) as folder:
         db = sqlite3.connect(str(Path(folder)/'staging.sqlite'))
@@ -197,10 +229,11 @@ def dump(value, file):
 
 
 @contextmanager
-def archive_file(store, month=None):
+def archive_file(store, month=None, compressed=False):
     with snapshots(store,month) as (folder, paths):
-        output = folder/'archive.json'
-        with output.open('w',encoding='utf-8') as file:
+        output = folder/('archive.json.gz' if compressed else 'archive.json')
+        opener = gzip.open if compressed else open
+        with opener(output, 'wt', encoding='utf-8') as file:
             header = {'schema_version':1,'scheme':'geographic-quadtree','base_zoom':BASE_ZOOM,
                       'retention_months':RETENTION_MONTHS,'source_type':store.source_type,'exported_at':store.clock()}
             file.write(json.dumps(header,separators=(',',':'))[:-1]+',"months":{')

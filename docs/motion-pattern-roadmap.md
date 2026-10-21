@@ -1,6 +1,8 @@
+> Current dev.2 additions: selected trails, sampled analytical history/export across sources, offline motion replay, geometry diagnostics, trusted-network access and observed-descent arrival scenarios. [Exact behavior and validation](v0.7.2-dev.2-testing.md). Earlier no-FAA-history/export statements below describe the prior build; dev.2 permits deliberate analytical history downloads while automatic FAA feed bridging remains disabled.
+
 # v0.7.x — Motion & Pattern Analysis Roadmap
 
-Purpose: analyze what aircraft are doing now, rather than where they have historically been observed. A rolling in-memory history supplies motion context without turning the Bridge into a permanent flight-history database. This roadmap defines the v0.7 series direction. The public v0.7.0 release implements the common short-term motion engine, basic flight-state primitives and the destination ETA and experimental modeled arrival range. v0.7.1 improves envelope performance and persistence. Subsequent increments add geometric patterns and pair analysis. Exact feature-to-release assignments remain open. The interim v0.8.x roadmap labels are superseded.
+Purpose: analyze what aircraft are doing now, rather than where they have historically been observed. A rolling in-memory history supplies motion context without turning the Bridge into a permanent flight-history database. This roadmap defines the v0.7 series direction. The public v0.7.0 release implements the common short-term motion engine, basic flight-state primitives and the destination ETA and experimental modeled arrival range. v0.7.1 improves envelope performance and persistence. v0.7.2-dev.1 begins experimental circles/orbits, reversals and repeated racetrack geometry; subsequent increments validate/refine these and add pair analysis. Exact feature-to-release assignments remain open. The interim v0.8.x roadmap labels are superseded.
 
 ## Evidence and metadata
 
@@ -115,7 +117,7 @@ Start with the common motion foundation rather than making destination ETA the p
 | --- | --- | --- |
 | 0.7.0 — foundation and basic flight states | Bounded timestamped history, source-age/duplicate/gap handling, motion quality, steady flight, climb/descent, speed trends and sustained turns; optional validated ETA companion | Stable state labels with duration/support; repeated ADS-B snapshots do not create false confidence; TFMS and flights.js remain excluded |
 | 0.7.1 — envelope performance and saved builds | SQL aggregation, bounded NumPy reduction, persistent Load/Build controls, age and diagnostics | Equivalent products; fast saved load after restart; history/source/Home validation |
-| 0.7.2 — repeated single-aircraft geometry | Constant-radius turns/orbits, reversals, racetrack/holding-like and pattern precedence | Repetition distinguishes a transient turn from an established pattern; large racetracks and exits behave correctly |
+| 0.7.2 — repeated single-aircraft geometry (dev.1 preview) | Constant-radius turns/orbits, reversals, racetrack/holding-like and pattern precedence | Repetition distinguishes a transient turn from an established pattern; large racetracks and exits behave correctly |
 | 0.7.3 — destination and Home trends | Inbound/crossing/outbound and sustained movement away from last reported destination; suppress divergence during established holding-like geometry | Departure vectors and racetrack legs avoid repetitive divergence notices; stale metadata is visible |
 | 0.7.4 — proximity and CPA/TCPA | Three-dimensional separation, spatial gating, relative-motion predictions and explainable candidate highlights | Constant-motion assumptions and altitude uncertainty are exposed; bounded processing at high aircraft counts |
 | 0.7.5 and later — richer patterns and coordinated groups | Parallel/grid passes, figure-eights, correlated vectors, persistent formations, explicit-route deviation and contextual hypotheses | Positive/negative trajectories distinguish geometry from intent; supporting evidence remains inspectable |
@@ -130,8 +132,4 @@ Most state stays in memory; persistence requires a specific later requirement. N
 
 Test synthetic positive and negative trajectories alongside live ADS-B and suitable SBS/aircraft.json observations. Include heading wraparound, duplicate reports, out-of-order timestamps, dropout/reacquisition, altitude-reference mismatches, noisy steady flight, departure vectors, weather-like detours, large racetracks and holding exit. Verify repeated snapshots do not increase independent motion support, and gaps do not invent observed turns or acceleration.
 
-Detector outputs must expose evidence, duration and quality. Thresholds remain experimental until sampling behavior and false positives are evaluated. Confidence is a quality/support score until separately calibrated; display/analysis criteria do not establish unsafe separation or operational intent.
-
-## Engineering companion
-
-The implemented preview calculations and thresholds are in [Implemented motion primitives](motion-primitives-v0.7.0-dev.1.md). See [Motion Analytics — Living Engineering Notes](motion-analytics-engineering.md) for the stage contracts, motion equations, curvature-center fitting, orbit/racetrack clustering, provisional gates and validation ledger. Update both documents as increments are built.
+Detector outputs must expose evidence, duration and quality. Thresholds remain experiment

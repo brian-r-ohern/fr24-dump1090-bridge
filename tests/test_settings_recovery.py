@@ -125,3 +125,33 @@ class SettingsRecoveryTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class StartupOptionsRegressionTests(unittest.TestCase):
+    def test_all_manifest_defaults_match_recovery_allowlist(self):
+        # Parse flat options using stdlib so this check needs no YAML dependency.
+        import ast
+        root=Path(__file__).resolve().parents[1]/'fr24-dump1090'
+        block=(root/'config.yaml').read_text().split('options:\n',1)[1].split('\nschema:',1)[0]
+        manifest={}
+        for line in block.splitlines():
+            if not line.strip():continue
+            key,value=line.strip().split(':',1);value=value.strip()
+            manifest[key]= {'true':True,'false':False}.get(value) if value in ('true','false') else ast.literal_eval(value)
+        self.assertEqual(manifest,json.loads((root/'settings_defaults.json').read_text()))
+        manifest.update(source='swim_sfdps',swim_host='tcps://synthetic.invalid:55443',swim_vpn='test',swim_username='test',swim_password='synthetic',swim_queue='test')
+        checked=settings.checked_options(manifest)
+        self.assertEqual(checked['source'],'swim_sfdps');self.assertEqual(checked['swim_product'],'sfdps')
+        self.assertEqual(checked['trusted_networks'],manifest['trusted_networks'])
+    def test_pre_dev2_sfdps_settings_gain_network_default_without_changing_source(self):
+        old={'source':'swim_sfdps','swim_host':'synthetic.invalid','swim_vpn':'test','swim_username':'test','swim_password':'synthetic','swim_queue':'test','swim_product':'tfms'}
+        checked=settings.checked_options(old)
+        self.assertEqual(checked['source'],'swim_sfdps');self.assertEqual(checked['swim_product'],'sfdps');self.assertIn('trusted_networks',checked)
+    def test_complete_manifest_options_reach_collector_through_bootstrap(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        defaults=json.loads((Path(settings.__file__).with_name('settings_defaults.json')).read_text())
+        defaults.update(source='swim_sfdps',swim_host='synthetic.invalid',swim_vpn='test',swim_username='test',swim_password='synthetic',swim_queue='test')
+        collector=Mock()
+        with patch.object(bootstrap,'read_options',return_value=defaults),patch.object(bootstrap,'save_snapshot'),patch.object(bootstrap,'ThreadingHTTPServer') as server,patch('dashboard_install.configure_dashboard'),patch.dict(sys.modules,{'fr24_dump1090':SimpleNamespace(main=collector)}):
+            bootstrap.main()
+        collector.assert_called_once();server.assert_not_called()

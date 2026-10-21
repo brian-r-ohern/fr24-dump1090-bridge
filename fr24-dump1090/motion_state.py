@@ -1,6 +1,6 @@
 """Bounded, transient motion estimates and basic primitives; stdlib only.
 
-No interpolation, orbit/holding detection, intent labels or feed mutation.
+No interpolation, intent labels or feed mutation. Experimental geometric patterns are separate from primitives.
 See docs/motion-primitives-v0.7.0-dev.1.md for exact preview thresholds.
 """
 from collections import OrderedDict, deque
@@ -9,6 +9,7 @@ import statistics
 import math
 import threading
 import time
+from motion_patterns import detect as detect_patterns, LIMITS as PATTERN_LIMITS
 
 EARTH_M = 6371008.8
 KNOT_MPS = 0.5144444444444445
@@ -95,6 +96,7 @@ class MotionEngine:
         self.lock = threading.RLock()
         self.tracks = OrderedDict()
         self.counters = dict.fromkeys(('accepted', 'duplicates', 'throttled', 'invalid', 'out_of_order', 'gaps', 'discontinuities', 'occurrence_changes', 'evicted'), 0)
+        self.pattern_transitions={'candidate_started':0,'established_started':0,'ended':0}
         self.last_error = None
         self.last_batch_seconds = 0
         self.last_summary_at = None
@@ -116,8 +118,15 @@ class MotionEngine:
                       "rejection_reasons_total": reasons,
                       "tracked_aircraft": len(self.tracks),
                       "retained_samples": sum(len(t["samples"]) for t in self.tracks.values()),
+                      "retained_pattern_samples":sum(len(t["pattern_samples"]) for t in self.tracks.values()),
+                      "retained_pattern_events":sum(len(t["pattern_completed"]) for t in self.tracks.values()),
                       "retained_events": sum(len(t["completed"]) for t in self.tracks.values()),
                       "last_batch_seconds": round(self.last_batch_seconds, 6)}
+            gates={}
+            for track in self.tracks.values():
+                for reason,count in track.get('pattern_gate_counts',{}).items():gates[reason]=gates.get(reason,0)+count
+            result['geometry_gate_rejections']={'scope':'latest analysis per retained track; candidate windows can overlap','counts':gates}
+            result['pattern_transitions_total']=dict(self.pattern_transitions)
             bases={};blockers={};derived=[];reported=[];intervals=[];differences=[];ranges=[];residuals=[];trends=[];stale=0
             for track in self.tracks.values():
                 state=track['state'];diagnostics=state.get('speed_diagnostics',{})
@@ -217,6 +226,9 @@ class MotionEngine:
                     track = {'samples': deque(maxlen=LIMITS['max_samples_per_aircraft']), 'segment': 1,
                              'reason': 'first_observation', 'last_received': received, 'last_analysis': 0,
                              'occurrence': meta.get('occurrence'), 'state': {}, 'events': {},
+                             'pattern_samples':deque(maxlen=PATTERN_LIMITS['max_samples']),
+                             'pattern_active':{},'pattern_completed':deque(maxlen=PATTERN_LIMITS['max_completed_events']),
+                             'last_pattern_analysis':0,'patterns':[],
                              'completed': deque(maxlen=LIMITS['max_completed_events_per_aircraft'])}
                     self.tracks[key] = track
                 prev = track['samples'][-1] if track['samples'] else None
@@ -239,6 +251,15 @@ class MotionEngine:
                     elif dt < LIMITS['sample_interval_seconds']:
                         self.counters['throttled'] += 1; continue
                 track['samples'].append(sample)
+                if sample['ground'] or (prev and prev['ground']):
+                    track['pattern_samples'].clear()
+                    self._update_patterns(track,[],sample['t'],'ground_transition')
+                    track['last_pattern_analysis']=0
+                history=track['pattern_samples']
+                if not history or sample['t']-history[-1]['t']>=PATTERN_LIMITS['sample_interval_seconds']:
+                    history.append(sample)
+                while history and sample['t']-history[0]['t']>PATTERN_LIMITS['history_seconds']:
+                    history.popleft()
                 while track['samples'] and sample['t']-track['samples'][0]['t'] > LIMITS['history_seconds']:
                     track['samples'].popleft()
                 track['last_received'] = received
@@ -259,8 +280,24 @@ class MotionEngine:
     def _reset(self, track, reason):
         if track['samples']:
             self._finish(track, list(track['events']), track['samples'][-1]['t'], reason)
+        self._update_patterns(track,[],track['samples'][-1]['t'] if track['samples'] else 0,reason)
+        track['pattern_samples'].clear();track['last_pattern_analysis']=0
         track['samples'].clear(); track['events'].clear(); track['state'] = {}
         track['segment'] += 1; track['reason'] = reason; track['last_analysis'] = 0
+
+    def _update_patterns(self, track, patterns, now, reason='geometry_no_longer_supported'):
+        active={}
+        for pattern in patterns:
+            key=pattern['name']+':'+pattern['status']
+            old=track['pattern_active'].get(key)
+            pattern['detected_at']=old['detected_at'] if old else now
+            if old is None:self.pattern_transitions[pattern['status']+'_started']+=1
+            active[key]=pattern
+        for key,old in track['pattern_active'].items():
+            if key not in active:
+                self.pattern_transitions['ended']+=1
+                track['pattern_completed'].append({**old,'ended_at':now,'ended_reason':('superseded_by_pattern' if patterns and reason=='geometry_no_longer_supported' else reason),'segment':track['segment']})
+        track['pattern_active']=active;track['patterns']=patterns
 
     def _prune(self, now):
         for key in [k for k,v in self.tracks.items() if now-v['last_received'] > LIMITS['expire_seconds']]:
@@ -390,6 +427,18 @@ class MotionEngine:
         track['events'] = events
         state['quality'] = 'warming_up' if not eligible else 'supported' if labels else 'insufficient_or_unclassified'
         state['time_basis'] = last['time_basis']; state['altitude_timing'] = last['altitude_timing']
+        if last['t']-track['last_pattern_analysis']>=PATTERN_LIMITS['sample_interval_seconds']:
+            gates={}
+            self._update_patterns(track,detect_patterns(list(track['pattern_samples']),gates),last['t'])
+            track['pattern_gate_counts']=gates
+            track['last_pattern_analysis']=last['t']
+        if last['ground']:
+            self._update_patterns(track,[],last['t'],'on_ground')
+        state['pattern_diagnostics']={'gate_rejections':dict(track.get('pattern_gate_counts',{})),'reason':'on_ground' if last['ground'] else 'detected' if track['patterns'] else 'collecting_geometry_history' if len(track['pattern_samples'])<PATTERN_LIMITS['minimum_samples'] else 'no_qualifying_geometry',
+            'samples':len(track['pattern_samples']),
+            'span_seconds':round(track['pattern_samples'][-1]['t']-track['pattern_samples'][0]['t'],1) if track['pattern_samples'] else 0}
+        state['patterns']=[dict(p) for p in track['patterns']]
+        state['pattern_history_samples']=len(track['pattern_samples'])
         track['state'] = state
 
     def snapshot(self, keys=None, now=None, include_events=False):
@@ -404,9 +453,10 @@ class MotionEngine:
                 state = dict(track['state'])
                 state.update(position_age_seconds=round(age,1), source_time=last['t'], segment=track['segment'], segment_reason=track['reason'], retained_samples=len(track['samples']))
                 if age > self.profile['fresh_seconds']:
-                    state['quality'] = 'stale'; state['primitives'] = []
+                    state['quality'] = 'stale'; state['primitives'] = []; state['patterns']=[]; state.pop('airport_context',None); state.pop('destination_movement',None)
                 if include_events:
                     state['completed_events'] = [dict(event) for event in track['completed']]
+                    state['completed_patterns']=[dict(event) for event in track['pattern_completed']]
                 result[key] = state
             return {'source': self.source, 'available': self.source in MOTION_SOURCES,
                     'reason': None if self.source in MOTION_SOURCES else ('position_precision_excluded' if self.source == 'flights_js' else 'selected_source_excluded'),
@@ -424,15 +474,18 @@ class MotionEngine:
             self.last_summary_at = tick
             states = self.snapshot(now=now)['aircraft']
             quality = dict.fromkeys(('warming_up', 'supported', 'insufficient_or_unclassified', 'stale'), 0)
-            primitives = {}
+            primitives = {}; patterns = {}
             for state in states.values():
                 quality[state['quality']] += 1
+                for pattern in state.get('patterns',[]):
+                    name=pattern['name']+':'+pattern['status']
+                    patterns[name]=patterns.get(name,0)+1
                 for primitive in state.get('primitives', []):
                     name = primitive['name']
                     primitives[name] = primitives.get(name, 0)+1
             return {'source': self.source, 'window': 'current state',
                     'tracked_aircraft': len(states), 'quality': quality,
-                    'primitives': dict(sorted(primitives.items())),
+                    'primitives': dict(sorted(primitives.items())), 'patterns':dict(sorted(patterns.items())),
                     'labels_can_overlap': True}
 
     def status(self):
@@ -443,4 +496,7 @@ class MotionEngine:
                     'supported_sources': list(MOTION_SOURCES), 'transient': True,
                     'tracked_aircraft': len(self.tracks), 'retained_samples': sum(len(t['samples']) for t in self.tracks.values()),
                     'retained_events': sum(len(t['completed']) for t in self.tracks.values()), 'last_batch_seconds': round(self.last_batch_seconds,6),
+                    'pattern_limits':dict(PATTERN_LIMITS),
+                    'retained_pattern_samples':sum(len(t['pattern_samples']) for t in self.tracks.values()),
+                    'retained_pattern_events':sum(len(t['pattern_completed']) for t in self.tracks.values()),
                     'limits': dict(LIMITS), 'profile': dict(self.profile), 'counters': dict(self.counters), 'rejection_reasons': dict(self.rejection_reasons), 'last_error': self.last_error}

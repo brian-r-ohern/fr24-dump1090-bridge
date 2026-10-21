@@ -18,3 +18,13 @@ state.metrics.turn_rate_deg_s=1;assert(run().reason.includes('turning'));state.m
 state.speed_diagnostics.reported_speed_knots=null;assert(!run().available);state.speed_diagnostics.reported_speed_knots=400;
 ctx.inputSource='swim_sfdps';ac.seen_pos=20;assert(run().available);ctx.inputSource='sbs_30003';assert(!run().available);
 console.log('PASS coupled distance/altitude scenarios, slower modeled arrival, high airport elevation, unsupported profiles, stale/missing inputs, inbound/climb/turn gates, SFDPS freshness and infeasible direct path');
+
+ac.seen_pos=1;state.quality='supported';state.patterns=[{name:'racetrack',status:'candidate'}];assert(!run().available);assert(run().reason.includes('orbit or racetrack'));state.patterns=[];
+console.log('PASS modeled touchdown defers during observed orbit/racetrack');
+state.primitives=[{name:'descending',duration_seconds:60}];state.metrics.vertical_rate_fpm=-1900;estimate.distanceNm=263;ac.alt_baro=32350;state.speed_diagnostics.reported_speed_knots=384;
+result=run();assert(result.available);assert.equal(result.stage,'observed descent');
+for(const scenario of result.scenarios){assert.equal(scenario.cruise_minutes,0);assert.equal(scenario.phases[0].phase,'observed descent');assert(Math.abs(scenario.phases.reduce((sum,p)=>sum+(p.distance_nm||0),0)-263)<1e-7);assert(Math.abs(scenario.phases.reduce((sum,p)=>sum+(p.height_loss_ft||0),0)-31850)<1e-7);assert(scenario.phases[0].descent_rate_fpm<=3000)}
+state.primitives[0].duration_seconds=10;assert.equal(run().stage,'cruise then descent');
+state.primitives[0].duration_seconds=60;
+for(const rate of [-350,-9000]){state.metrics.vertical_rate_fpm=rate;result=run();assert(result.available);assert(Number.isFinite(result.maximumMinutes));assert(result.maximumMinutes>result.minimumMinutes)}
+console.log('PASS sustained observed descent, brief fluctuation fallback, bounded rates and complete route/height accounting');

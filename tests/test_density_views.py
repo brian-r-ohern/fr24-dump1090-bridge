@@ -202,7 +202,7 @@ class DensityEnvelopeHttpTests(bridge_tests.DensityBridgeTests):
             self.assertTrue(self.request('/traffic-density/envelopes?action=status')[1]['available'])
             bridge.CFG['source']='swim_sfdps'
             for action in ('status','load','build'):
-                self.assertEqual(self.request('/traffic-density/envelopes?action='+action)[0],403)
+                self.assertEqual(self.request('/traffic-density/envelopes?action='+action)[0],200)
         finally:
             bridge.home_marker=original;bridge.CFG['source']='sbs_30003'
 
@@ -230,10 +230,10 @@ class DensityEnvelopeHttpTests(bridge_tests.DensityBridgeTests):
             bridge.collect_density([self.ac],NOW)
             with patch.object(bridge,'flush_coverage') as flush:
                 code,payload=self.request('/traffic-density/envelopes')
-                self.assertEqual(code,403)
-                self.assertIn('exports disabled',payload['error'])
+                self.assertEqual(code,200)
+                self.assertIn('products',payload)
                 flush.assert_not_called()
-            self.assertEqual(self.request('/traffic-density.geojson')[0],403)
+            self.assertEqual(self.request('/traffic-density.geojson')[0],200)
             code,page=self.request('/?density_view=1&zoom=11&max_cells=6000&bbox=-78,40,-76,43')
             self.assertEqual(code,200);self.assertIn('faa-density-state',page)
             self.assertEqual(self.request('/range-coverage')[0],404)

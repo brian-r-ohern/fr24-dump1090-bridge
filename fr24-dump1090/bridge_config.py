@@ -1,6 +1,7 @@
 """Shared feed configuration validation, also used before recovery startup."""
 from urllib.parse import urlsplit
 import re
+import ipaddress
 VALID_SOURCES = ("sbs_30003", "flights_js", "aircraft_json", "swim_tfms", "swim_sfdps")
 
 def validate_options(cfg):
@@ -43,7 +44,11 @@ def validate_options(cfg):
         raise ValueError("verbose_logging must be boolean")
     if cfg.get("map_theme", "auto") not in ("auto", "light", "dark"):
         raise ValueError("map_theme must be auto, light or dark")
+    networks=cfg.get('trusted_networks','127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7')
+    if not isinstance(networks,str) or not networks.strip():raise ValueError('trusted_networks must contain CIDRs')
+    for network in networks.split(','):ipaddress.ip_network(network.strip())
     return {
+        "trusted_networks":networks,
         "map_theme": cfg.get("map_theme", "auto"),
         "verbose_logging": cfg.get("verbose_logging", False),
         **tracker_entities,

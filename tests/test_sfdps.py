@@ -94,9 +94,8 @@ class SfdpsIsolationTests(unittest.TestCase):
             self.assertIn('TEST123',page);self.assertIn('local view',page)
         bridge.CFG['source']='sbs_30003';self.assertEqual(self.request('/data/aircraft.json')[0],200)
 
-    def test_sfdps_density_enabled_range_and_exports_remain_disabled(self):
-        for route in ('/traffic-density','/traffic-density/export','/traffic-density.geojson',
-                      '/traffic-density/envelopes','/range-coverage','/range-coverage.geojson','/motion'):
+    def test_sfdps_density_enabled_range_and_feed_outputs_remain_disabled(self):
+        for route in ('/traffic-density','/range-coverage','/range-coverage.geojson','/motion'):
             self.assertIn(self.request(route)[0],(403,404))
         with tempfile.TemporaryDirectory() as temp, patch.dict('os.environ',{'FR24_DENSITY_PATH':temp+'/density'}):
             store=bridge.open_density_store()
@@ -114,7 +113,7 @@ class SfdpsIsolationTests(unittest.TestCase):
                     code,page=self.request('/?density_view=1&zoom=11&bbox=-78,41,-76,43')
                     self.assertEqual(code,200);self.assertIn('faa-density-state',page);self.assertIn('faa-motion-state',page)
         code,page=self.request('/status-page');self.assertEqual(code,200)
-        self.assertIn('id="density-backup"',page);self.assertNotIn('id="density-envelope-backup"',page)
+        self.assertIn('id="density-backup"',page);self.assertIn('id="density-envelope-backup"',page)
 
     def test_publisher_passes_report_epoch_for_motion(self):
         epoch=time.time()-12

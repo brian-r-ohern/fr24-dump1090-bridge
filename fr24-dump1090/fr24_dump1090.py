@@ -5,6 +5,7 @@ import ast
 import atexit
 import signal
 import sys
+import gzip
 import json
 import math
 import os
@@ -23,7 +24,11 @@ from urllib.request import HTTPDigestAuthHandler, HTTPPasswordMgrWithDefaultReal
 
 from feed_consumers import FeedConsumers
 from airport_lookup import AirportLookup
+from sbs_transport import received_chunks, MessageWatchdog
+from history_geojson import history_geojson
+from proximity import proximity_view
 from motion_state import MotionEngine
+from track_history import TrackHistory, allowed_peer, DEFAULT_NETWORKS
 from bridge_config import validate_options
 from bridge_settings import settings_page, settings_post
 from traffic_density import DensityStore
@@ -37,7 +42,7 @@ from swim_sfdps import parse_sfdps_tracks
 from density_tiles import CacheNotReady
 from swim_tfms import SwimTfmsClient, parse_tfms_tracks, update_tfms_course
 
-BUILD_VERSION = "0.7.1"
+BUILD_VERSION = "0.7.2"
 airport_lookup = AirportLookup(Path(__file__).with_name('airports.json'))
 
 CONFIG_PATH = os.environ.get("FR24_OPTIONS_PATH", "/data/options.json")
@@ -369,6 +374,7 @@ def transform(data):
 density_store = None
 density_startup_error = None
 motion_engine = MotionEngine(CFG['source'])
+track_history = TrackHistory(CFG['source'])
 
 
 def get_motion_engine():
@@ -380,9 +386,16 @@ def get_motion_engine():
 
 def collect_snapshot(aircraft, observed, source_now=None, metadata=None):
     """Independent transient analytics and existing persistent density collection."""
+    global track_history
     get_motion_engine()
+    if track_history.source != CFG['source']:track_history=TrackHistory(CFG['source'])
+    try:
+        track_history.observe(aircraft, observed, source_now, metadata)
+    except Exception as exc:
+        print(f'[WARN] History collection failed: {type(exc).__name__}',flush=True)
     try:
         motion_engine.observe(aircraft, observed, source_now, metadata)
+        track_history.annotate(motion_engine, observed, airport_lookup)
         motion_engine.last_error = None
         summary = motion_engine.periodic_summary(now=observed)
         if summary is not None:
@@ -1106,14 +1119,11 @@ def sbs_reader():
                 had_connection = True
                 print("SBS/BaseStation feed connected", flush=True)
                 buffer = b""
-                while True:
-                    try:
-                        chunk = sock.recv(65536)
-                    except socket.timeout:
-                        continue
-                    if not chunk:
-                        raise ConnectionError("receiver closed TCP/30003 connection")
+                watchdog = MessageWatchdog()
+                for chunk in received_chunks(sock, watchdog=watchdog):
                     buffer += chunk
+                    if len(buffer)>1048576:
+                        raise ConnectionError('SBS line buffer exceeded 1 MiB; reconnecting')
                     while b"\n" in buffer:
                         raw_line, buffer = buffer.split(b"\n", 1)
                         line = raw_line.decode("ascii", errors="replace")
@@ -1126,6 +1136,7 @@ def sbs_reader():
                                 sbs_parse_errors += 1
                         if update is None:
                             continue
+                        watchdog.accepted()
                         with lock:
                             apply_sbs_update(update, observed_at)
                             sbs_total_messages += 1
@@ -1457,12 +1468,13 @@ html,body,#map{height:100%;margin:0;background:#111;font-family:system-ui,-apple
 html[data-map-palette="dark"] .leaflet-tile-pane{filter:invert(100%) hue-rotate(180deg) brightness(.85) contrast(.9)}
 html[data-map-palette="light"] .leaflet-tile-pane{filter:none}
 html[data-map-palette="light"] #map{background:#ddd}
-.topbar{position:absolute;z-index:1000;top:10px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.90);color:#eee;border-radius:8px;padding:8px 12px;box-shadow:0 2px 8px #0008;display:flex;gap:12px;align-items:center;white-space:normal;flex-wrap:wrap;justify-content:center;max-width:calc(100vw - 44px);width:max-content;box-sizing:border-box}.topbar strong{font-size:14px}.topbar{max-height:55vh;overflow:auto}.toolbar-main{display:flex;gap:8px 12px;align-items:center;justify-content:center;flex-wrap:wrap;width:100%}.analysis-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%;align-items:start}.analysis-controls{font-size:12px;min-width:0;border:1px solid #666;border-radius:5px;padding:6px 8px;box-sizing:border-box}.analysis-controls summary{cursor:pointer;min-height:24px}.analysis-body{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;padding-top:6px}.analysis-body>span{flex-basis:100%;font-size:11px;color:#ccc}.analysis-body label{white-space:normal}[hidden]{display:none!important}.stats{font-size:12px;color:#ccc}.ok{color:#6ddc79}.bad{color:#ff6b6b}.degraded{color:#ffd166}.btn{border:1px solid #666;background:#222;color:#eee;border-radius:5px;padding:5px 8px;cursor:pointer}.btn:hover{background:#333}
+.topbar{position:absolute;z-index:1000;top:10px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.90);color:#eee;border-radius:8px;padding:8px 12px;box-shadow:0 2px 8px #0008;display:flex;gap:12px;align-items:center;white-space:normal;flex-wrap:wrap;justify-content:center;max-width:calc(100vw - 44px);width:max-content;box-sizing:border-box}.topbar strong{font-size:14px}#map-controls{width:100%}#map-controls>summary{cursor:pointer;font-size:13px;min-height:24px}#map-controls[open]>summary{margin-bottom:6px}#map-controls>.analysis-row{margin-top:8px}.topbar{max-height:55vh;overflow:auto}.toolbar-main{display:flex;gap:8px 12px;align-items:center;justify-content:center;flex-wrap:wrap;width:100%}.analysis-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%;align-items:start}.analysis-controls{font-size:12px;min-width:0;border:1px solid #666;border-radius:5px;padding:6px 8px;box-sizing:border-box}.analysis-controls summary{cursor:pointer;min-height:24px}.analysis-body{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;padding-top:6px}.analysis-body>span{flex-basis:100%;font-size:11px;color:#ccc}.analysis-body label{white-space:normal}[hidden]{display:none!important}.stats{font-size:12px;color:#ccc}.ok{color:#6ddc79}.bad{color:#ff6b6b}.degraded{color:#ffd166}.btn{border:1px solid #666;background:#222;color:#eee;border-radius:5px;padding:5px 8px;cursor:pointer}.btn:hover{background:#333}
 .bottom-dock{position:absolute;z-index:1000;left:10px;right:10px;bottom:28px;display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px;pointer-events:none}.bottom-dock>*{pointer-events:auto;max-width:100%;box-sizing:border-box}.info{position:static;margin-left:auto;min-width:205px;background:rgba(17,17,17,.90);color:#ddd;border-radius:7px;padding:8px 10px;box-shadow:0 2px 8px #0008;font-size:11px}.info-title{font-weight:700;font-size:12px;cursor:pointer;min-height:28px;line-height:28px}.info-body{max-height:var(--status-body-height,40vh);overflow:auto;overscroll-behavior:contain}.info[open] .info-title{margin-bottom:5px}.info-grid{display:grid;grid-template-columns:auto auto;gap:2px 12px}.info-grid span:nth-child(odd){color:#aaa}.info-grid span:nth-child(even){text-align:right}.nav{border-top:1px solid #444;margin-top:6px;padding-top:5px;text-align:right}.nav a{color:#8fc1ff;text-decoration:none}.plane{position:relative;width:var(--plane-size,36px);height:var(--plane-size,36px);color:#1367a8;filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white);transform-origin:50% 50%}.plane svg{display:block;width:100%;height:100%;fill:currentColor}.plane.military{color:#22a447}.plane.closest{filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white) drop-shadow(0 0 4px #f33) drop-shadow(0 0 7px #f33)}.plane.destination::after,.plane.origin::after{position:absolute;right:-7px;top:-7px;font:700 9px/13px system-ui;color:#111;background:#ffd166;border:1px solid #7a5a00;border-radius:50%;width:13px;height:13px;text-align:center;transform:rotate(var(--counter-rotation,0deg))}.plane.destination::after{content:"D"}.plane.origin::after{content:"O"}.plane.origin.destination::after{content:"O/D";width:21px;right:-11px;border-radius:7px}.leaflet-popup-content{min-width:190px}.ac-title{font-weight:700;font-size:15px}.ac-flags{margin-top:4px;color:#b22;font-size:11px}.ac-grid{margin-top:6px;display:grid;grid-template-columns:auto auto;gap:2px 10px}.ac-grid span:nth-child(odd){color:#666}.home-marker{width:28px;height:28px;filter:drop-shadow(0 0 2px white) drop-shadow(0 0 2px white)}.home-marker svg{display:block;width:28px;height:28px}.trackbox{display:none;position:static;min-width:0;background:rgba(17,17,17,.90);color:#eee;border-radius:7px;padding:7px 8px;box-shadow:0 2px 8px #0008;font-size:11px}.trackbox input{width:78px;background:#222;color:#eee;border:1px solid #666;border-radius:4px;padding:4px;text-transform:uppercase}.trackbox .btn{padding:4px 6px}.track-status{margin-left:5px;color:#bbb}
 @media (max-width:900px),(max-height:600px){.topbar{left:60px;right:10px;top:10px;transform:none;max-width:none;width:auto;gap:5px 8px;padding:7px 9px}.topbar strong{min-width:0}.bottom-dock{left:8px;right:8px}.info{min-width:0}.track-status{overflow-wrap:anywhere}}
 @media (max-width:600px){.toolbar-main{justify-content:flex-start}.analysis-row{grid-template-columns:minmax(0,1fr)}.info-grid{grid-template-columns:minmax(0,1fr) auto}.info-grid span{overflow-wrap:anywhere}}
 
-</style></head><body><div id="map"></div><div class="topbar"><div class="toolbar-main"><strong>__SOURCE_TITLE__</strong><span id="stats" class="stats">Loading aircraft…</span><label style="font-size:12px">Map theme <select class="btn" id="map-theme" aria-label="Map theme"><option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option></select></label><button class="btn" id="fit">Fit aircraft</button><button class="btn" id="density-refresh" hidden>Load density</button><button class="btn" id="density-force" hidden title="Rebuild visible density tiles now">Refresh now</button><label style="font-size:12px"><input id="density-toggle" type="checkbox"> Traffic Density</label><span id="density-state" style="font-size:11px"></span><label id="range-control" style="font-size:12px"><input id="range-toggle" type="checkbox" checked> Range ring</label></div><div class="analysis-row"><details id="motion-options" class="analysis-controls" hidden><summary>Motion · <span id="motion-total">Loading</span></summary><div class="analysis-body"><label><input id="motion-colors" type="checkbox"> Color aircraft by motion</label><label><input class="motion-filter" value="all" type="checkbox" checked> All aircraft <b id="motion-count-all">0</b></label><label><span aria-hidden="true" style="color:#49bde0">●</span> <input class="motion-filter" value="steady_flight" type="checkbox"> Steady flight <b id="motion-count-steady_flight">0</b></label><label><span aria-hidden="true" style="color:#4cce75">●</span> <input class="motion-filter" value="climbing" type="checkbox"> Climbing <b id="motion-count-climbing">0</b></label><label><span aria-hidden="true" style="color:#ff9b46">●</span> <input class="motion-filter" value="descending" type="checkbox"> Descending <b id="motion-count-descending">0</b></label><label><span aria-hidden="true" style="color:#bd91ff">●</span> <input class="motion-filter" value="turning_left" type="checkbox"> Turning left <b id="motion-count-turning_left">0</b></label><label><span aria-hidden="true" style="color:#bd91ff">●</span> <input class="motion-filter" value="turning_right" type="checkbox"> Turning right <b id="motion-count-turning_right">0</b></label><label><span aria-hidden="true" style="color:#ff6d99">●</span> <input class="motion-filter" value="decelerating" type="checkbox"> Decelerating <b id="motion-count-decelerating">0</b></label><label><span aria-hidden="true" style="color:#ffe066">●</span> <input class="motion-filter" value="accelerating" type="checkbox"> Accelerating <b id="motion-count-accelerating">0</b></label><label><input class="motion-filter" value="warming_up" type="checkbox"> Warming up <b id="motion-count-warming_up">0</b></label><label><input class="motion-filter" value="stale" type="checkbox"> Stale <b id="motion-count-stale">0</b></label><label><input class="motion-filter" value="other" type="checkbox"> Other / collecting <b id="motion-count-other">0</b></label><span id="motion-view-status"></span></div></details><details id="density-options" class="analysis-controls" hidden><summary>Density altitude selection</summary><div class="analysis-body"><label><input class="density-band" value="low" type="checkbox"> Low &lt; 1,200 ft</label><label><input class="density-band" value="middle" type="checkbox"> Middle 1,200–17,999 ft</label><label><input class="density-band" value="high" type="checkbox"> High ≥ 18,000 ft</label><label><input class="density-band" value="all" type="checkbox" checked> All Traffic (includes Unknown)</label></div></details><details id="envelope-control" class="analysis-controls"><summary>Density envelopes · comparison</summary><div class="analysis-body"><span>30 days · cell centers · 0.5° bearings</span><button class="btn" id="envelope-load" disabled>Load envelopes</button><span id="envelope-age">Checking saved envelopes…</span><button class="btn" id="envelope-generate">Build envelopes</button><label style="color:#33d6dc"><input class="envelope-band" value="all" type="checkbox"> All</label><label style="color:#59d86b"><input class="envelope-band" value="low" type="checkbox" checked> Low</label><label style="color:#ffaa33"><input class="envelope-band" value="middle" type="checkbox" checked> Middle</label><label style="color:#ca8cff"><input class="envelope-band" value="high" type="checkbox" checked> High</label><span id="envelope-state">Load the last build or build a new comparison; existing range ring remains authoritative.</span></div></details></div></div><div class="bottom-dock"><div id="trackbox" class="trackbox"><input id="trackhex" maxlength="6" placeholder="ICAO hex"><button class="btn" id="trackshow">Track</button><button class="btn" id="trackclear">Clear</button><span id="trackstatus" class="track-status"></span></div><details id="bridge-info" class="info" open><summary class="info-title">Bridge status</summary><div class="info-body"><div id="info-grid" class="info-grid"><span>Feed</span><span>Loading…</span></div><div class="nav"><a href="status-page">Status</a> · <a href="data/aircraft.json">aircraft.json</a></div></div></details></div>
+#history-controls{display:flex;flex-wrap:wrap;align-items:center;gap:5px;max-width:min(520px,100%)}#history-controls input{width:auto}#analysis-history-status{flex-basis:100%;overflow-wrap:anywhere}
+</style></head><body><div id="map"></div><div class="topbar"><details id="map-controls" open><summary>Map controls</summary><div class="toolbar-main"><strong>__SOURCE_TITLE__</strong><span id="stats" class="stats">Loading aircraft…</span><label style="font-size:12px">Map theme <select class="btn" id="map-theme" aria-label="Map theme"><option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option></select></label><button class="btn" id="fit">Fit aircraft</button><button class="btn" id="density-refresh" hidden>Load density</button><button class="btn" id="density-force" hidden title="Rebuild visible density tiles now">Refresh now</button><label style="font-size:12px"><input id="density-toggle" type="checkbox"> Traffic Density</label><span id="density-state" style="font-size:11px"></span><label id="range-control" style="font-size:12px"><input id="range-toggle" type="checkbox" checked> Range ring</label></div><div class="analysis-row"><details id="motion-options" class="analysis-controls" hidden><summary>Motion · <span id="motion-total">Loading</span></summary><div class="analysis-body"><label><input id="motion-colors" type="checkbox"> Color aircraft by motion</label><label><input class="motion-filter" value="all" type="checkbox" checked> All aircraft <b id="motion-count-all">0</b></label><label><span aria-hidden="true" style="color:#49bde0">●</span> <input class="motion-filter" value="steady_flight" type="checkbox"> Steady flight <b id="motion-count-steady_flight">0</b></label><label><span aria-hidden="true" style="color:#4cce75">●</span> <input class="motion-filter" value="climbing" type="checkbox"> Climbing <b id="motion-count-climbing">0</b></label><label><span aria-hidden="true" style="color:#ff9b46">●</span> <input class="motion-filter" value="descending" type="checkbox"> Descending <b id="motion-count-descending">0</b></label><label><span aria-hidden="true" style="color:#bd91ff">●</span> <input class="motion-filter" value="turning_left" type="checkbox"> Turning left <b id="motion-count-turning_left">0</b></label><label><span aria-hidden="true" style="color:#bd91ff">●</span> <input class="motion-filter" value="turning_right" type="checkbox"> Turning right <b id="motion-count-turning_right">0</b></label><label><span aria-hidden="true" style="color:#ff6d99">●</span> <input class="motion-filter" value="decelerating" type="checkbox"> Decelerating <b id="motion-count-decelerating">0</b></label><label><span aria-hidden="true" style="color:#ffe066">●</span> <input class="motion-filter" value="accelerating" type="checkbox"> Accelerating <b id="motion-count-accelerating">0</b></label><label><input class="motion-filter" value="racetrack" type="checkbox"> Racetrack / holding-like <b id="motion-count-racetrack">0</b></label><label><input class="motion-filter" value="repeated_orbit" type="checkbox"> Repeated orbit <b id="motion-count-repeated_orbit">0</b></label><label><input class="motion-filter" value="orbit" type="checkbox"> Orbit candidate <b id="motion-count-orbit">0</b></label><label><input class="motion-filter" value="constant_radius_turn" type="checkbox"> Constant-radius turn <b id="motion-count-constant_radius_turn">0</b></label><label><input class="motion-filter" value="course_reversal" type="checkbox"> Course reversal <b id="motion-count-course_reversal">0</b></label><label><input class="motion-filter" value="warming_up" type="checkbox"> Warming up <b id="motion-count-warming_up">0</b></label><label><input class="motion-filter" value="stale" type="checkbox"> Stale <b id="motion-count-stale">0</b></label><label><input class="motion-filter" value="other" type="checkbox"> Other / collecting <b id="motion-count-other">0</b></label><span id="motion-view-status"></span></div></details><details id="density-options" class="analysis-controls" hidden><summary>Density altitude selection</summary><div class="analysis-body"><label><input class="density-band" value="low" type="checkbox"> Low &lt; 1,200 ft</label><label><input class="density-band" value="middle" type="checkbox"> Middle 1,200–17,999 ft</label><label><input class="density-band" value="high" type="checkbox"> High ≥ 18,000 ft</label><label><input class="density-band" value="all" type="checkbox" checked> All Traffic (includes Unknown)</label></div></details><details id="proximity-control" class="analysis-controls"><summary>Proximity / CPA · <span id="proximity-selected">select aircraft</span></summary><div class="analysis-body"><label><input id="proximity-toggle" type="checkbox"> Show nearby aircraft</label><span>10 NM horizontal · nearest 10 by slant range · five-minute constant-velocity window · informational</span><div id="proximity-results">Select an aircraft and enable proximity.</div></div></details><details id="envelope-control" class="analysis-controls"><summary>Density envelopes · comparison</summary><div class="analysis-body"><span>30 days · cell centers · 0.5° bearings</span><button class="btn" id="envelope-load" disabled>Load envelopes</button><span id="envelope-age">Checking saved envelopes…</span><button class="btn" id="envelope-generate">Build envelopes</button><label style="color:#33d6dc"><input class="envelope-band" value="all" type="checkbox"> All</label><label style="color:#59d86b"><input class="envelope-band" value="low" type="checkbox" checked> Low</label><label style="color:#ffaa33"><input class="envelope-band" value="middle" type="checkbox" checked> Middle</label><label style="color:#ca8cff"><input class="envelope-band" value="high" type="checkbox" checked> High</label><span id="envelope-state">Load the last build or build a new comparison; existing range ring remains authoritative.</span></div></details></div></details></div><div class="bottom-dock"><div id="history-controls" class="trackbox"><label><input id="analysis-trail-toggle" type="checkbox" checked> Selected trail</label> <button class="btn" id="analysis-export">Export selected</button> <button class="btn" id="analysis-export-all">Export all</button> <span id="analysis-history-status">Select an aircraft</span></div><div id="trackbox" class="trackbox"><input id="trackhex" maxlength="6" placeholder="ICAO hex"><button class="btn" id="trackshow">Track</button><button class="btn" id="trackclear">Clear</button><span id="trackstatus" class="track-status"></span></div><details id="bridge-info" class="info" open><summary class="info-title">Bridge status</summary><div class="info-body"><div id="info-grid" class="info-grid"><span>Feed</span><span>Loading…</span></div><div class="nav"><a href="status-page">Status</a> · <a href="data/aircraft.json">aircraft.json</a></div></div></details></div>
 <script id="overlay-layout">
 (()=>{
   const info=document.getElementById('bridge-info'),body=info.querySelector('.info-body'),summary=info.querySelector('summary'),bar=document.querySelector('.topbar'),dock=document.querySelector('.bottom-dock'),track=document.getElementById('trackbox'),surface=document.getElementById('map');
@@ -1530,6 +1542,7 @@ function modeledArrival(ac,t,estimate,state){
   const valid=v=>typeof v==='number'&&Number.isFinite(v);
   const limit=inputSource==='swim_sfdps'?45:15;
   if(!valid(ac.seen_pos)||ac.seen_pos<0||ac.seen_pos>limit||!state||state.quality!=='supported')return unavailable('fresh supported motion required');
+  if((state.patterns||[]).some(p=>['racetrack','orbit','repeated_orbit'].includes(p.name)))return unavailable('observed orbit or racetrack; direct arrival scenario deferred');
   const speed=state.speed_diagnostics?.reported_speed_knots;
   if(!valid(speed)||speed<100||speed>650)return unavailable('fresh reported ground speed required');
   const elevation=estimate.airport.elevation_ft;
@@ -1548,9 +1561,24 @@ function modeledArrival(ac,t,estimate,state){
   if(difference>60)return unavailable('not presently inbound to destination');
   if((metrics.vertical_rate_fpm??0)>300)return unavailable('currently climbing');
   if(Math.abs(metrics.turn_rate_deg_s??0)>.3)return unavailable('turning; direct arrival scenario deferred');
+  const descent=(state.primitives||[]).find(p=>p.name==='descending');
+  const observedDescent=!!descent&&descent.duration_seconds>=30&&valid(metrics.vertical_rate_fpm)&&metrics.vertical_rate_fpm<=-300;
   const profiles=[{name:'faster',rates:[3000,1500,900],ends:[250,180,150]},{name:'slower',rates:[1500,1000,600],ends:[230,160,130]}];
   const scenarios=profiles.map(profile=>{
     let h=height,v=speed,distance=0,minutes=0;const phases=[];
+    // During observed descent, spend remaining early distance descending gently,
+    // stopping at 10,000 ft rather than inventing a future cruise segment.
+    if(observedDescent&&h>10000){
+      const normal=(h-10000)/profile.rates[0];
+      const reserve=(10000-3000)/profile.rates[1]*(Math.min(v,profile.ends[0])+profile.ends[1])/120+3000/profile.rates[2]*(profile.ends[1]+profile.ends[2])/120;
+      const end=Math.min(v,profile.ends[0]);
+      const available=Math.max(0,estimate.distanceNm-reserve)*120/(v+end);
+      const bounded=Math.max(500,Math.min(3000,-metrics.vertical_rate_fpm));
+      const duration=Math.max(normal,Math.min(available,(h-10000)/(bounded*(profile.name==='faster'?1.2:.8))));
+      const loss=h-10000,travel=(v+end)*duration/120;
+      phases.push({phase:'observed descent',height_loss_ft:loss,minutes:duration,start_ground_speed_knots:v,end_ground_speed_knots:end,descent_rate_fpm:loss/duration,distance_nm:travel});
+      h=10000;v=end;minutes+=duration;distance+=travel;
+    }
     for(let i=0;i<3;i++){
       const bottom=[10000,3000,0][i];if(h<=bottom)continue;
       const loss=h-bottom,duration=loss/profile.rates[i],end=Math.min(v,profile.ends[i]);
@@ -1559,18 +1587,19 @@ function modeledArrival(ac,t,estimate,state){
       distance+=travel;minutes+=duration;h=bottom;v=end;
     }
     const extraDistance=Math.max(0,distance-estimate.distanceNm);
-    const cruiseMinutes=Math.max(0,estimate.distanceNm-distance)/speed*60;
-    return {name:profile.name,minutes:minutes+cruiseMinutes,descent_distance_nm:distance,extra_distance_nm:extraDistance,cruise_minutes:cruiseMinutes,phases};
+    const cruiseMinutes=Math.max(0,estimate.distanceNm-distance)/(observedDescent?Math.min(speed,profile.ends[0]):speed)*60;
+    if(observedDescent&&cruiseMinutes>0)phases.push({phase:'arrival level-off allowance',minutes:cruiseMinutes,distance_nm:Math.max(0,estimate.distanceNm-distance)});
+    return {name:profile.name,minutes:minutes+cruiseMinutes,descent_distance_nm:distance,extra_distance_nm:extraDistance,cruise_minutes:observedDescent?0:cruiseMinutes,arrival_level_minutes:observedDescent?cruiseMinutes:0,phases};
   });
   if(scenarios.some(s=>s.extra_distance_nm>.05))return {available:false,reason:'extra route distance needed for descent/slowdown scenario',extraDistanceNm:Math.max(...scenarios.map(s=>s.extra_distance_nm)),scenarios};
   const times=scenarios.map(s=>s.minutes);
-  return {available:true,minimumMinutes:Math.min(...times),maximumMinutes:Math.max(...times),scenarios,profile:'experimental transport jet',altitudeBasis:geometric?'geometric altitude minus airport elevation':'reported altitude minus airport elevation (pressure/datum approximation)'};
+  return {available:true,minimumMinutes:Math.min(...times),maximumMinutes:Math.max(...times),scenarios,stage:observedDescent?'observed descent':'cruise then descent',profile:'experimental transport jet',altitudeBasis:geometric?'geometric altitude minus airport elevation':'reported altitude minus airport elevation (pressure/datum approximation)'};
 }
 function modeledArrivalHtml(ac,t,estimate){
   const key=String(ac.hex||'').toLowerCase(),state=typeof currentMotionState==='function'?currentMotionState(key):null,result=modeledArrival(ac,t,estimate,state);
-  if(!result.available)return '<span>Modeled arrival</span><b>'+esc(result.reason)+(Number.isFinite(result.extraDistanceNm)?' (~'+Math.ceil(result.extraDistanceNm)+' NM additional path in these scenarios)':'')+'</b>';
+  if(!result.available)return '<span>Modeled touchdown</span><b>'+esc(result.reason)+(Number.isFinite(result.extraDistanceNm)?' (~'+Math.ceil(result.extraDistanceNm)+' NM additional path in these scenarios)':'')+'</b>';
   const low=Math.floor(result.minimumMinutes),high=Math.ceil(result.maximumMinutes),format=minutes=>{const value=new Date(Date.now()+minutes*60000).toISOString(),today=new Date().toISOString().slice(0,10);return(value.slice(0,10)===today?'':value.slice(0,10)+' ')+value.slice(11,16)+' UTC'};
-  return '<span title="Experimental transport-jet scenarios, not a clearance, safety calculation or validated landing forecast">Estimated arrival · modeled</span><b>~'+low+'–'+high+' min ('+esc(format(result.minimumMinutes))+' – '+esc(format(result.maximumMinutes))+')</b><span>Arrival assumptions</span><b><details><summary>Descent + slowdown; jet scenarios</summary><div>'+esc(result.altitudeBasis)+'<br>Altitude bands: above 10,000 ft, 10,000–3,000 ft, below 3,000 ft above airport.<br>Faster descent: 3,000 / 1,500 / 900 ft/min; ground-speed endpoints: 250 / 180 / 150 kt.<br>Slower descent: 1,500 / 1,000 / 600 ft/min; ground-speed endpoints: 230 / 160 / 130 kt.<br>Slowdown is linear within each phase. These are assumed ground speeds, not indicated-airspeed limits. Travel and descent overlap. Airport-center distance; no runway, vectors, wind correction or holding. Range is a scenario bracket, not statistical confidence.</div></details></b>';
+  return '<span title="Experimental transport-jet scenarios, not a clearance, safety calculation or validated landing forecast">Estimated touchdown · modeled</span><b>~'+low+'–'+high+' min ('+esc(format(result.minimumMinutes))+' – '+esc(format(result.maximumMinutes))+')</b><span>Touchdown assumptions</span><b><details><summary>Descent + slowdown; jet scenarios</summary><div>'+esc(result.altitudeBasis)+'<br>Stage: '+esc(result.stage)+'. Sustained descent uses a bounded observed rate above 10,000 ft; remaining distance may require a level-off allowance.<br>Altitude bands: above 10,000 ft, 10,000–3,000 ft, below 3,000 ft above airport.<br>Faster descent: 3,000 / 1,500 / 900 ft/min; ground-speed endpoints: 250 / 180 / 150 kt.<br>Slower descent: 1,500 / 1,000 / 600 ft/min; ground-speed endpoints: 230 / 160 / 130 kt.<br>Slowdown is linear within each phase. These are assumed ground speeds, not indicated-airspeed limits. Travel and descent overlap. Airport-center distance; no runway, vectors, wind correction or holding. Range is a scenario bracket, not statistical confidence.</div></details></b>';
 }
 function destinationEstimateHtml(ac,t){
   const estimate=destinationEstimate(ac,t);if(!estimate)return '';
@@ -1594,16 +1623,16 @@ async function refreshMotionStates(){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),4000);
   try{const r=await fetch('motion',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('Motion unavailable');const data=await r.json();motionStates=data.aircraft||{};for(const state of Object.values(motionStates))state.fetched_at=Date.now()/1000;motionFreshSeconds=data.fresh_seconds||15}catch(e){motionStates={}}finally{clearTimeout(timer);motionFetchPending=false}
 }
-const motionPalette={turning_left:'#bd91ff',turning_right:'#bd91ff',descending:'#ff9b46',climbing:'#4cce75',decelerating:'#ff6d99',accelerating:'#ffe066',steady_flight:'#49bde0'};
+const motionPalette={racetrack:'#ef80e6',repeated_orbit:'#af86ff',orbit:'#af86ff',constant_radius_turn:'#bd91ff',course_reversal:'#bd91ff',turning_left:'#bd91ff',turning_right:'#bd91ff',descending:'#ff9b46',climbing:'#4cce75',decelerating:'#ff6d99',accelerating:'#ffe066',steady_flight:'#49bde0'};
 function currentMotionState(key){
   const state=motionStates[key];if(!state)return null;
   const age=Number(state.position_age_seconds)+(Date.now()/1000-Number(state.fetched_at||Date.now()/1000));
-  return age>motionFreshSeconds?{...state,quality:'stale',primitives:[]}:state;
+  return age>motionFreshSeconds?{...state,quality:'stale',primitives:[],patterns:[]}:state;
 }
 function motionLabels(key){
   const state=currentMotionState(key);if(!state)return ['other'];
   if(['stale','warming_up'].includes(state.quality))return [state.quality];
-  const labels=(state.primitives||[]).map(p=>p.name);
+  const labels=[...(state.primitives||[]).map(p=>p.name),...(state.patterns||[]).map(p=>p.name)];
   return labels.some(label=>Object.hasOwn(motionPalette,label))?labels:[...labels,'other'];
 }
 function matchesMotion(key,selected){return selected.includes('all')||motionLabels(key).some(label=>selected.includes(label))}
@@ -1631,9 +1660,26 @@ function motionStateHtml(key){
   const names={steady_flight:'Steady flight',level_altitude:'Level altitude',stable_speed:'Stable speed',stable_course:'Stable course',climbing:'Climbing',descending:'Descending',accelerating:'Accelerating',decelerating:'Decelerating',turning_left:'Turning left',turning_right:'Turning right'};
   const primitives=state.primitives||[],visible=primitives.some(p=>p.name==='steady_flight')?primitives.filter(p=>!['level_altitude','stable_speed','stable_course'].includes(p.name)):primitives;
   const label=state.quality==='stale'?'Position stale':state.quality==='warming_up'?'Warming up':visible.length?visible.map(p=>(names[p.name]||p.name)+' · '+Math.round(p.duration_seconds)+'s support').join(' / '):'Insufficient or unclassified';
+  const patterns=state.quality==='stale'?[]:(state.patterns||[]);
+  const patternNames={racetrack:'Racetrack / holding-like',repeated_orbit:'Repeated orbit',orbit:'Orbit',constant_radius_turn:'Constant-radius turn',course_reversal:'Course reversal'};
+  const patternHtml=patterns.length?'<span>Observed geometry</span><b>'+patterns.map(p=>'<details data-popup-section="geometry-'+esc(p.name)+'"><summary>'+esc(patternNames[p.name]||p.name)+' · '+esc(p.status)+'</summary>'+esc(Math.round(p.duration_seconds))+'s observed support · evidence score '+esc(p.confidence)+' (uncalibrated)<br>'+Object.entries(p.evidence||{}).map(([k,v])=>esc(k.replaceAll('_',' '))+': '+esc(Array.isArray(v)?v.join(', '):v)).join('<br>')+'</details>').join('')+'</b>':'';
   const metrics=state.metrics||{},speed=state.speed_diagnostics;
-  const speedDebug=(typeof verboseMotion!=='undefined'&&verboseMotion&&speed)?'<span>Speed diagnostics</span><b><details><summary>'+esc(state.quality==='stale'?'Position stale':speed.stable_speed?'Stable speed':(speed.blockers||[]).join(', ').replaceAll('_',' '))+'</summary><div>Detection speed source: '+esc(speed.speed_basis||'position_derived_ground_speed').replaceAll('_',' ')+'<br>Position-derived ground speed: '+esc(metrics.ground_speed_knots??'—')+' kt<br>'+esc(speed.reported_speed_semantics==='reported_speed_unverified'?'Reported speed (meaning unverified)':'Reported ground speed')+': '+esc(speed.reported_speed_knots??'—')+' kt<br>Latest leg minus latest report: '+esc(speed.latest_leg_derived_minus_latest_reported_knots??'—')+' kt<br>Derived min / median / max: '+esc(speed.derived_speeds_knots?Object.values(speed.derived_speeds_knots).join(' / '):'—')+' kt<br>Selected analysis min / median / max: '+esc(speed.analysis_speeds_knots?Object.values(speed.analysis_speeds_knots).join(' / '):'—')+' kt<br>Selected range / fit residual: '+esc(speed.speed_range_knots??'—')+' / '+esc(speed.speed_residual_knots??'—')+' kt<br>Trend: '+esc(speed.acceleration_knots_s??'—')+' kt/s<br>Report intervals min / median / max: '+esc(speed.report_intervals_seconds?Object.values(speed.report_intervals_seconds).join(' / '):'—')+' s<br>Usable speeds: '+esc(speed.usable_speed_samples)+'; span: '+esc(speed.speed_span_seconds)+' s<br>Reported timing: '+esc(speed.reported_speed_timing||'—')+'</div></details></b>':'';
-  return '<span title="Derived from independent positioned observations; support duration is not a confirmed flight phase">Observed motion</span><b>'+esc(label)+'</b>'+((inputSource==='swim_sfdps'&&state.speed_basis)?'<span>Motion speed source</span><b>'+esc(state.speed_basis.replaceAll('_',' '))+'</b>':'')+((state.quality!=='stale'&&Number.isFinite(metrics.turn_rate_deg_s))?'<span>Observed turn rate</span><b>'+esc(metrics.turn_rate_deg_s.toFixed(2))+'°/s</b>':'')+((state.quality!=='stale'&&Number.isFinite(metrics.vertical_rate_fpm))?'<span>Observed vertical trend</span><b>'+esc(Math.round(metrics.vertical_rate_fpm))+' ft/min</b>':'')+speedDebug;
+  const speedDebug=(typeof verboseMotion!=='undefined'&&verboseMotion&&speed)?'<span>Speed diagnostics</span><b><details data-popup-section="speed-diagnostics"><summary>'+esc(state.quality==='stale'?'Position stale':speed.stable_speed?'Stable speed':(speed.blockers||[]).join(', ').replaceAll('_',' '))+'</summary><div>Detection speed source: '+esc(speed.speed_basis||'position_derived_ground_speed').replaceAll('_',' ')+'<br>Position-derived ground speed: '+esc(metrics.ground_speed_knots??'—')+' kt<br>'+esc(speed.reported_speed_semantics==='reported_speed_unverified'?'Reported speed (meaning unverified)':'Reported ground speed')+': '+esc(speed.reported_speed_knots??'—')+' kt<br>Latest leg minus latest report: '+esc(speed.latest_leg_derived_minus_latest_reported_knots??'—')+' kt<br>Derived min / median / max: '+esc(speed.derived_speeds_knots?Object.values(speed.derived_speeds_knots).join(' / '):'—')+' kt<br>Selected analysis min / median / max: '+esc(speed.analysis_speeds_knots?Object.values(speed.analysis_speeds_knots).join(' / '):'—')+' kt<br>Selected range / fit residual: '+esc(speed.speed_range_knots??'—')+' / '+esc(speed.speed_residual_knots??'—')+' kt<br>Trend: '+esc(speed.acceleration_knots_s??'—')+' kt/s<br>Report intervals min / median / max: '+esc(speed.report_intervals_seconds?Object.values(speed.report_intervals_seconds).join(' / '):'—')+' s<br>Usable speeds: '+esc(speed.usable_speed_samples)+'; span: '+esc(speed.speed_span_seconds)+' s<br>Reported timing: '+esc(speed.reported_speed_timing||'—')+'</div></details></b>':'';
+  return '<span title="Derived from independent positioned observations; support duration is not a confirmed flight phase">Observed motion</span><b>'+esc(label)+'</b>'+((inputSource==='swim_sfdps'&&state.speed_basis)?'<span>Motion speed source</span><b>'+esc(state.speed_basis.replaceAll('_',' '))+'</b>':'')+((state.quality!=='stale'&&Number.isFinite(metrics.turn_rate_deg_s))?'<span>Observed turn rate</span><b>'+esc(metrics.turn_rate_deg_s.toFixed(2))+'°/s</b>':'')+((state.quality!=='stale'&&Number.isFinite(metrics.vertical_rate_fpm))?'<span>Observed vertical trend</span><b>'+esc(Math.round(metrics.vertical_rate_fpm))+' ft/min</b>':'')+patternHtml+((state.quality!=='stale'&&state.destination_movement)?'<span>Destination movement</span><b>'+esc(({inbound:'Moving toward',outbound:'Moving away',crossing:'Little change in distance'})[state.destination_movement.direction]||state.destination_movement.direction)+' · '+esc(state.destination_movement.destination)+' · destination metadata age unknown'+(state.destination_movement.sustained_movement_away?' · sustained movement away':'')+(state.destination_movement.divergence_suppressed?' · divergence suppressed during holding-like geometry':'')+'</b>':'')+((state.quality!=='stale'&&state.airport_context)?'<span>Airport context</span><b>'+esc(state.airport_context.name.replaceAll('_',' '))+' · '+esc(state.airport_context.airport)+' · '+esc(state.airport_context.distance_nm)+' NM (intent unconfirmed)</b>':'')+((typeof verboseMotion!=='undefined'&&verboseMotion&&state.pattern_diagnostics)?'<span>Geometry diagnostics</span><b>'+esc(state.pattern_diagnostics.reason.replaceAll('_',' '))+' · '+esc(state.pattern_diagnostics.samples)+' positions / '+esc(state.pattern_diagnostics.span_seconds)+'s<br>'+Object.keys(state.pattern_diagnostics.gate_rejections||{}).map(x=>esc(x.replaceAll('_',' '))).join(', ')+'</b>':'')+speedDebug;
+}
+function updateAircraftPopup(marker,html){
+  const previous=marker.getPopup(),element=previous?.getElement();
+  const state=marker.bridgePopupDetails||new Map();
+  if(element)for(const detail of element.querySelectorAll('details[data-popup-section]'))state.set(detail.dataset.popupSection,detail.open);
+  marker.bridgePopupDetails=state;
+  const content=element?.querySelector('.leaflet-popup-content'),scrollTop=content?.scrollTop||0;
+  const focused=document.activeElement,focusKey=element?.contains(focused)?focused?.closest('details[data-popup-section]')?.dataset.popupSection:null;
+  const template=document.createElement('template');template.innerHTML=html;
+  for(const detail of template.content.querySelectorAll('details[data-popup-section]'))if(state.has(detail.dataset.popupSection))detail.open=state.get(detail.dataset.popupSection);
+  marker.setPopupContent(template.innerHTML);
+  const updated=marker.getPopup()?.getElement(),nextContent=updated?.querySelector('.leaflet-popup-content');
+  if(nextContent)nextContent.scrollTop=scrollTop;
+  if(focusKey)for(const detail of updated?.querySelectorAll('details[data-popup-section]')||[])if(detail.dataset.popupSection===focusKey)detail.querySelector('summary')?.focus({preventScroll:true});
 }
 function popup(ac,flags,key,orientation){const t=trackerFor(key),title=(t.flight||ac.flight||'').trim()||ac.hex.toUpperCase(),tail=t.tail&&t.tail!=='Unknown'?t.tail:null,type=[t.aircraft_type,t.description&&t.description!=='Unknown aircraft'?t.description:null].filter(Boolean).join(' · '),badges=[];if(flags.military)badges.push('MILITARY');if(flags.closest)badges.push('CLOSEST');if(flags.origin)badges.push(`ORIGIN: ${destinationAirport}`);if(flags.destination)badges.push(`DESTINATION: ${destinationAirport}`);const route=(t.route_origin||t.route_destination)?`${esc(t.route_origin||'—')}${t.route_origin_name?` (${esc(t.route_origin_name)})`:''} → ${esc(t.route_destination||'—')}${t.route_destination_name?` (${esc(t.route_destination_name)})`:''}`:null;const enriched=[tail?`<span>Registration</span><b>${esc(tail)}</b>`:'',type?`<span>Aircraft</span><b>${esc(type)}</b>`:'',route?`<span>Route</span><b>${route}</b>`:'',t.distance_display?`<span>Distance</span><b>${esc(t.distance_display)}</b>`:''].join('');const tfmsMeta=['airline','route_origin','route_destination','aircraft_category','user_category','arrival_time','position_time','assigned_altitude_raw'].filter(k=>ac[k]).map(k=>'<span>'+esc(k.replaceAll('_',' '))+'</span><b>'+esc(ac[k])+'</b>').join('');const badgeHtml=badges.length?`<div class="ac-flags">${badges.map(x=>`<b>${esc(x)}</b>`).join(' · ')}</div>`:'';const trackText=orientation.degrees==null?'—':`${orientation.degrees.toFixed(1)}° (${cardinalDirection(orientation.degrees)})${(orientation.source==='calculated'||ac.track_source==='calculated')?' (course)':''}`;return `<div class="ac-title">${esc(title)}</div>${badgeHtml}<div class="ac-grid">${enriched}${tfmsMeta}${destinationEstimateHtml(ac,t)}${motionStateHtml(key)}<span>${['swim_tfms','swim_sfdps'].includes(inputSource)?'Local track':'ICAO'}</span><b>${esc(ac.hex.toUpperCase())}</b>${ac.icao_address?'<span>Reported ICAO</span><b>'+esc(ac.icao_address.toUpperCase())+'</b>':''}<span>Altitude</span><b>${altitude(ac.alt_baro)}</b><span>${inputSource==='swim_sfdps'?'Reported ground speed':'Ground speed'}</span><b>${fmt(ac.gs,' kt')}</b><span>Track/course</span><b>${trackText}</b><span>Vertical rate</span><b>${signed(ac.baro_rate)}</b><span>Squawk</span><b>${fmt(ac.squawk)}</b><span>Last message</span><b>${fmt(ac.seen,' sec')}</b><span>Last position</span><b>${fmt(ac.seen_pos,' sec')}</b></div>`}
 function aircraftIconSize(zoom){return zoom<6?24:36}
@@ -1717,6 +1763,60 @@ document.getElementById('density-force').addEventListener('click',()=>refreshDen
 
 async function refreshCoverage(){if(!coverageOutlineEnabled||!rangeToggle.checked)return;try{const r=await fetch('range-coverage',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),bins=Array.isArray(c.bins)?c.bins:[];const ranges=bins.map(x=>Number(x.distance_nm)).filter(Number.isFinite);maxObservedRange=ranges.length?Math.max(...ranges):null;const segs=(Array.isArray(c.envelope_segments)?c.envelope_segments:[]).map(run=>run.map(p=>[p[1],p[0]]));if(!rangeToggle.checked)return;if(segs.length){if(!coverageLine)coverageLine=L.polyline(segs,{color:'#ff1c1c',weight:2,opacity:.85,interactive:false,noClip:true}).addTo(map);else coverageLine.setLatLngs(segs);coverageLine.redraw()}else if(coverageLine){map.removeLayer(coverageLine);coverageLine=null}}catch(err){console.warn('Coverage outline unavailable',err)}}
 function clearTrack(){if(trackLine){map.removeLayer(trackLine);trackLine=null}trackStatus.textContent=''}
+let selectedAnalysisKey=null,analysisTrail=null,analysisEvidence=null,analysisBusy=false,analysisSelection=0;
+let proximityBusy=false;
+function proximityHtml(data){
+  if(data.reason!=='ok')return esc((data.reason||'unavailable').replaceAll('_',' '));
+  if(!data.pairs.length)return 'No qualifying fresh nearby tracks within 10 NM.';
+  const identity=data.selected_identity||{};
+  const reference=[identity.flight,identity.icao_address?'ICAO '+identity.icao_address.toUpperCase():data.selected].filter(Boolean).join(' · ');
+  const heading='<div><b>Selected: '+esc(reference)+'</b></div>';
+  const rows=data.pairs.map(p=>{
+    const prediction=p.cpa_nm==null?'Unavailable':p.horizon_limited?'Window end: '+p.cpa_nm.toFixed(2)+' NM at 5 min':p.cpa_nm.toFixed(2)+' NM in '+Math.round(p.tcpa_seconds)+' s';
+    return '<tr><td>'+esc(p.flight)+'</td><td>'+p.horizontal_nm.toFixed(2)+' NM</td><td>'+(p.slant_nm==null?'Unknown':p.slant_nm.toFixed(2)+' NM')+'</td><td>'+(p.vertical_ft==null?'Unknown':p.vertical_ft+' ft')+'</td><td>'+esc(p.closing_knots==null?'Unknown':p.trend==='nearly_steady'?'Nearly steady':(p.closing_knots>=0?'Closing ':'Opening ')+Math.abs(p.closing_knots).toFixed(0)+' kt')+'</td><td>'+esc(prediction)+'</td><td>'+(p.vertical_at_cpa_ft==null?'Unknown':p.vertical_at_cpa_ft+' ft')+'</td><td>'+esc(p.quality.replaceAll('_',' '))+'</td></tr>';
+  }).join('');
+  return heading+'<div style="overflow-x:auto;max-height:260px"><table><thead><tr><th>Aircraft</th><th>Horizontal</th><th>Slant range</th><th>Vertical</th><th>Closure (horizontal)</th><th>Horizontal CPA / TCPA</th><th>Vertical then</th><th>Model quality</th></tr></thead><tbody>'+rows+'</tbody></table></div><small>Source-time aligned; stale tracks excluded. Vertical values require matching altitude references. No collision warning or separation assessment.</small>';
+}
+async function refreshProximity(){
+  if(proximityBusy)return;
+  const node=document.getElementById('proximity-results');
+  if(!document.getElementById('proximity-toggle').checked){node.textContent='Proximity disabled.';return}
+  if(!selectedAnalysisKey){node.textContent='Select an aircraft.';return}
+  proximityBusy=true;const key=selectedAnalysisKey,revision=analysisSelection,controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+  try{const response=await fetch('aircraft-proximity?track_id='+encodeURIComponent(key),{cache:'no-store',signal:controller.signal});if(!response.ok)throw Error('Proximity unavailable');const data=await response.json();if(revision===analysisSelection&&document.getElementById('proximity-toggle').checked){node.innerHTML=proximityHtml(data);const identity=data.selected_identity||{};document.getElementById('proximity-selected').textContent=[identity.flight,identity.icao_address?'ICAO '+identity.icao_address.toUpperCase():key].filter(Boolean).join(' · ')}}
+  catch(error){if(revision===analysisSelection)node.textContent='Proximity unavailable.'}finally{clearTimeout(timer);proximityBusy=false}
+}
+document.getElementById('proximity-toggle').addEventListener('change',refreshProximity);
+setInterval(refreshProximity,5000);
+
+function historySegments(samples,start=-Infinity,end=Infinity){
+  const segments=[];let run=[],previous=null;
+  for(const p of samples){
+    if(!Number.isFinite(p.lat)||!Number.isFinite(p.lon)||p.t<start||p.t>end){if(run.length)segments.push(run);run=[];previous=null;continue}
+    if(previous&&(p.segment!==previous.segment||p.break_reason||Math.abs(p.lon-previous.lon)>180)){if(run.length)segments.push(run);run=[]}
+    run.push([p.lat,p.lon]);previous=p;
+  }
+  if(run.length)segments.push(run);return segments;
+}
+async function refreshAnalysisTrail(){
+  if(analysisBusy||!selectedAnalysisKey)return;
+  if(!document.getElementById('analysis-trail-toggle').checked){if(analysisTrail)map.removeLayer(analysisTrail);if(analysisEvidence)map.removeLayer(analysisEvidence);analysisTrail=null;analysisEvidence=null;return}
+  analysisBusy=true;const key=selectedAnalysisKey,revision=analysisSelection;
+  try{const response=await fetch('aircraft-history?track_id='+encodeURIComponent(key),{cache:'no-store'});if(!response.ok)throw new Error('History unavailable');const data=await response.json();if(revision!==analysisSelection||!document.getElementById('analysis-trail-toggle').checked)return;
+    const samples=data.tracks?.[key]?.samples||[],segments=historySegments(samples);
+    if(analysisTrail)map.removeLayer(analysisTrail);if(analysisEvidence)map.removeLayer(analysisEvidence);
+    analysisTrail=L.polyline(segments,{color:'#5bd7ff',weight:3,opacity:.75,interactive:false}).addTo(map);
+    const patterns=data.motion?.aircraft?.[key]?.patterns||[];
+    analysisEvidence=L.layerGroup().addTo(map);
+    for(const pattern of patterns){const support=historySegments(samples,pattern.first_supported,pattern.last_supported);L.polyline(support,{color:'#ff62de',weight:6,opacity:.9,interactive:false}).addTo(analysisEvidence);const flat=support.flat();if(flat.length){L.circleMarker(flat[0],{radius:5,color:'#fff',fillOpacity:1}).addTo(analysisEvidence);L.circleMarker(flat[flat.length-1],{radius:5,color:'#ff62de',fillOpacity:1}).addTo(analysisEvidence)}}
+    document.getElementById('analysis-history-status').textContent=key.toUpperCase()+' · '+samples.length+' positions'+(samples.length?' / '+Math.round((samples.at(-1).t-samples[0].t)/60)+' min':'');
+  }catch(e){document.getElementById('analysis-history-status').textContent=e.message}finally{analysisBusy=false}
+}
+document.getElementById('analysis-trail-toggle').addEventListener('change',refreshAnalysisTrail);
+function exportAnalysis(all){if(!all&&!selectedAnalysisKey){document.getElementById('analysis-history-status').textContent='Select an aircraft first';return}window.location.href='aircraft-history?download=1&compression=gzip'+(all?'':'&track_id='+encodeURIComponent(selectedAnalysisKey))}
+document.getElementById('analysis-export').addEventListener('click',()=>exportAnalysis(false));
+document.getElementById('analysis-export-all').addEventListener('click',()=>exportAnalysis(true));
+setInterval(refreshAnalysisTrail,10000);
 async function showTrack(){const hex=document.getElementById('trackhex').value.trim().toLowerCase();const queryType=document.getElementById('trackhex').dataset.query||'hex';if(!(queryType==='callsign'?/^[a-z0-9]{1,16}$/:/^[0-9a-f]{6}$/).test(hex)){trackStatus.textContent=queryType==='callsign'?'Flight callsign required':'6-digit hex required';return}trackStatus.textContent='Loading…';try{const r=await fetch(`track-history?${queryType}=${encodeURIComponent(hex)}`,{cache:'no-store'});const d=await r.json();if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);const fields=Array.isArray(d.trail_fields)?d.trail_fields:[],ilat=fields.indexOf('lat'),ilon=fields.indexOf('lon'),pts=(Array.isArray(d.trail)?d.trail:[]).map(row=>[Number(row[ilat]),Number(row[ilon])]).filter(p=>Number.isFinite(p[0])&&Number.isFinite(p[1]));clearTrack();if(pts.length<1){trackStatus.textContent='No positions';return}trackLine=L.polyline(pts,{weight:4,opacity:.75,interactive:false}).addTo(map);trackStatus.textContent=`${(d.callsign||d.query||hex).toUpperCase()} · ${pts.length} positions`;trackLine.bringToFront();stabilizeMap()}catch(err){trackStatus.textContent=err.message}}
 document.getElementById('trackshow').addEventListener('click',showTrack);document.getElementById('trackclear').addEventListener('click',clearTrack);document.getElementById('trackhex').addEventListener('keydown',e=>{if(e.key==='Enter')showTrack()});
 const faaLocalView=!!document.getElementById('faa-map-state');
@@ -1729,7 +1829,9 @@ async function densityViewResponse(query,signal){
   return {ok:true,json:async()=>JSON.parse(node.textContent)};
 }
 async function mapViewResponse(){const response=await fetch('./',{cache:'no-store'});if(!response.ok)return response;const html=new DOMParser().parseFromString(await response.text(),'text/html'),node=html.getElementById('faa-map-state');if(!node)throw new Error('FAA local view unavailable');const aircraft=JSON.parse(node.textContent),motionNode=html.getElementById('faa-motion-state');if(motionNode){const data=JSON.parse(motionNode.textContent);motionStates=data.aircraft||{};for(const state of Object.values(motionStates))state.fetched_at=Date.now()/1000;motionFreshSeconds=data.fresh_seconds||45}return {ok:true,json:async()=>aircraft}}
-async function refresh(){try{const [ar,sr,er]=await Promise.all([faaLocalView?mapViewResponse():fetch('data/aircraft.json?client_id=bridge-map',{cache:'no-store'}),fetch('status',{cache:'no-store'}),fetch('tracker-enrichment',{cache:'no-store'})]);if(er.ok)enrichment=await er.json();else enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),status=sr.ok?await sr.json():null,active=new Set(),points=[];if(status?.source)inputSource=status.source;await refreshDestinationAirports(data.aircraft||[]);refreshMotionStates();for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);const flags=flagsFor(key,ac),orientation=displayTrack(key,ac,lat,lon);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(orientation.degrees,flags)}).addTo(map);m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false});markers.set(key,m)}else{m.setLatLng([lat,lon]);m.setIcon(icon(orientation.degrees,flags));if(m.getPopup())m.setPopupContent(popup(ac,flags,key,orientation));else m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false})}m.bridgeVisual={degrees:orientation.degrees,flags};}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}applyMotionView();if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refreshCoverage();setInterval(refreshCoverage,5000);refresh();setInterval(refresh,faaLocalView?5000:1000)})();
+let loadedSource=null;
+function sourceChanged(status){const source=status?.source;if(!source)return false;const faa=['swim_tfms','swim_sfdps'].includes(source);if(faa!==faaLocalView)return true;if(loadedSource&&loadedSource!==source)return true;loadedSource=source;return false}
+async function refresh(){try{const [ar,sr,er]=await Promise.all([faaLocalView?mapViewResponse():fetch('data/aircraft.json?client_id=bridge-map',{cache:'no-store'}),fetch('status',{cache:'no-store'}),fetch('tracker-enrichment',{cache:'no-store'})]);if(er.ok)enrichment=await er.json();else enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};const status=sr.ok?await sr.json():null;if(sourceChanged(status)){window.location.reload();return}if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),active=new Set(),points=[];if(status?.source)inputSource=status.source;await refreshDestinationAirports(data.aircraft||[]);refreshMotionStates();for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);const flags=flagsFor(key,ac),orientation=displayTrack(key,ac,lat,lon);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(orientation.degrees,flags)}).addTo(map);m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false});markers.set(key,m);m.on('click',()=>{selectedAnalysisKey=key;analysisSelection++;document.getElementById('proximity-selected').textContent=(ac.flight||key).trim();document.getElementById('proximity-results').textContent='Updating selection…';refreshAnalysisTrail();refreshProximity()})}else{m.setLatLng([lat,lon]);m.setIcon(icon(orientation.degrees,flags));if(m.getPopup())updateAircraftPopup(m,popup(ac,flags,key,orientation));else m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false})}m.bridgeVisual={degrees:orientation.degrees,flags};}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}applyMotionView();if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refreshCoverage();setInterval(refreshCoverage,5000);refresh();setInterval(refresh,faaLocalView?5000:1000)})();
 </script></body></html>
 '''
 
@@ -1747,9 +1849,10 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(raw_query)
         datasets = {'/traffic-density/import': 'traffic-density', '/range-coverage/import': 'range-coverage',
                     '/data/clear': 'collected-data', '/traffic-density/export': 'traffic-density',
-                    '/traffic-density.geojson': 'traffic-density', '/range-coverage': 'range-coverage',
+                    '/traffic-density.geojson': 'traffic-density', '/aircraft-history':'aircraft-history', '/range-coverage': 'range-coverage',
                     '/range-coverage.geojson': 'range-coverage', '/range-coverage-baseline': 'range-baseline',
                     '/traffic-density/envelopes': 'density-envelopes', '/traffic-density/envelopes.geojson': 'density-envelopes'}
+        if path == '/aircraft-history' and query.get('download') != ['1']:return None
         if path == '/traffic-density/envelopes' and query.get('action') == ['status']:
             return None
         if path not in datasets:
@@ -1795,10 +1898,15 @@ class Handler(BaseHTTPRequestHandler):
             self.operation_details = None
 
     def do_POST(self):
-        self._run_operation('POST', self._do_POST)
+        if self._trusted_peer():self._run_operation('POST', self._do_POST)
 
     def do_GET(self):
-        self._run_operation('GET', self._do_GET)
+        if self._trusted_peer():self._run_operation('GET', self._do_GET)
+
+    def _trusted_peer(self):
+        if allowed_peer(self.client_address[0],CFG.get('trusted_networks',DEFAULT_NETWORKS)):return True
+        self.send_json({'error':'Direct access requires a trusted network'},403)
+        return False
 
     def send_response(self, code, message=None):
         self.operation_status = code
@@ -1807,8 +1915,11 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
 
-    def send_json(self, payload, code=200, filename=None):
+    def send_json(self, payload, code=200, filename=None, compressed=False):
         body = json.dumps(payload, indent=2).encode("utf-8")
+        if compressed:
+            body = gzip.compress(body, compresslevel=5, mtime=0)
+            filename = (filename or "export.json") + ".gz"
         details = getattr(self, 'operation_details', None)
         if details and isinstance(payload, dict):
             for key in ('added','replaced','retained','received','ignored_months','populated_bins','total_bins','pending'):
@@ -1818,7 +1929,7 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(payload.get('cleared'), list): details['cleared'] = payload['cleared']
             details['response_bytes'] = len(body)
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/gzip" if compressed else ("application/geo+json" if filename and filename.endswith(".geojson") else "application/json"))
         if filename:
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -1954,11 +2065,42 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             requests_served += 1
         path, _, query_string = self.path.partition("?")
+        if path == "/aircraft-proximity":
+            query=parse_qs(query_string);key=query.get('track_id',[''])[0].strip().lower()
+            if not re.fullmatch(r'[a-z0-9~_-]{1,64}',key):
+                self.send_json({'error':'Select one valid local track identifier'},400);return
+            self.send_json(proximity_view(track_history.kinematic_snapshot(),key));return
+        if path == "/aircraft-history":
+            query=parse_qs(query_string)
+            keys=[v.strip().lower() for v in query.get('track_id',query.get('keys',['']))[0].split(',') if v.strip()]
+            if 'hex' in query:
+                hex_code=query['hex'][0].strip().lower()
+                if keys or not re.fullmatch(r'[0-9a-f]{6}',hex_code):
+                    self.send_json({'error':'Use a six-digit hex or a track_id selector'},400);return
+                keys=track_history.resolve_hex(hex_code)
+                if not keys:
+                    self.send_json({'error':'No retained history for this hex'},404);return
+            if len(keys)>32 or any(not re.fullmatch(r'[a-z0-9~_-]{1,64}',k) for k in keys):
+                self.send_json({'error':'Supply at most 32 valid local track identifiers'},400);return
+            if not keys and query.get('download')!=['1']:
+                self.send_json({'error':'Select a track, or explicitly download retained history'},400);return
+            payload=track_history.snapshot(keys or None)
+            payload['build_version']=BUILD_VERSION
+            payload['motion']=get_motion_engine().snapshot(keys or None,include_events=True)
+            download=query.get('download')==['1']
+            filename='aircraft-analysis-history.geojson'
+            if keys and len(payload['tracks'])==1:
+                track_id,record=next(iter(payload['tracks'].items()))
+                reported_hex=str(record.get('identity',{}).get('icao_address') or '').strip()
+                identifier=reported_hex.upper() if re.fullmatch(r'[0-9a-fA-F]{6}',reported_hex) else re.sub(r'[^a-zA-Z0-9~_-]','_',track_id)[:64]
+                filename=f'aircraft-analysis-history-{identifier}.geojson'
+            self.send_json(history_geojson(payload) if download else payload,filename=filename if download else None, compressed=download and query.get('compression')==['gzip'])
+            return
         if CFG["source"] in FAA_SOURCES and path in ("/aircraft.json", "/data/aircraft.json", "/track-history", "/motion"):
             self.send_json({"error": "FAA local-view mode: retransmission and track-history API disabled"}, 403)
             return
-        if CFG["source"] in FAA_SOURCES and path in ("/traffic-density/view", "/traffic-density", "/traffic-density/export", "/traffic-density.geojson", "/traffic-density/envelopes", "/traffic-density/envelopes.geojson"):
-            self.send_json({"error": "FAA local-view mode: data exports disabled"}, 403)
+        if CFG["source"] in FAA_SOURCES and path in ("/traffic-density/view", "/traffic-density"):
+            self.send_json({"error": "FAA local-view mode: use deliberate analytical downloads"}, 403)
             return
         if path == "/settings":
             self.send_html(settings_page())
@@ -1990,8 +2132,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if path == "/traffic-density/export":
                     month = parse_qs(query_string).get("month", [None])[0]
-                    with archive_file(density_store, month) as file:
-                        self.send_file(file, export_name("traffic-density" + ("-"+month if month else "")))
+                    compressed = parse_qs(query_string).get('compression') == ['gzip']
+                    with archive_file(density_store, month, compressed=compressed) as file:
+                        self.send_file(file, export_name("traffic-density" + ("-"+month if month else "")) + ('.gz' if compressed else ''), 'application/gzip' if compressed else 'application/json')
                     return
                 elif path == "/traffic-density/status":
                     payload = density_store.status()
@@ -2212,7 +2355,7 @@ a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file
 <tr><td>ADSB Aircraft Tracker</td><td>{(lambda e: 'Disabled' if e.get('tracker_state') == 'disabled' else ('Detected / active' if e.get('tracker_state') == 'active' else ('Temporarily unavailable' if e.get('tracker_state') == 'unavailable' else 'Awaiting detection')))(refresh_tracker_enrichment())}</td></tr><tr><td>O/D airport</td><td>{CFG['destination_airport'] or 'Not configured'}</td></tr>
 <tr><td>HTTP requests served</td><td>{s['requests_served']}</td></tr><tr><td>Uptime</td><td>{s['uptime_seconds']} sec</td></tr></table>
 <h2>Density display cache</h2><p><strong>Load density</strong> displays the current viewport using valid cached tiles. <strong>Refresh now</strong> rebuilds visible tiles from stored observations. Cached tiles expire after two hours; the map shows the oldest tile generation time as “As of”. Collection continues independently. Restore and clear invalidate the server cache. The first broad view may backfill derived parent totals; progress appears in App logs.</p>
-<h2>Motion display</h2><p>Aircraft match any selected motion label. When <strong>Color aircraft by motion</strong> is enabled, color priority is turns → descent → climb → slowing → speeding → steady. Other states retain normal colors. Military and origin/destination badges, and the closest-aircraft glow, remain visible.</p>
+<h2>Motion display</h2><p>Aircraft match any selected motion label. When <strong>Color aircraft by motion</strong> is enabled, color priority is racetrack → repeated orbit → orbit → constant-radius turn → reversal → turns → descent → climb → slowing → speeding → steady. Other states retain normal colors. Military and origin/destination badges, and the closest-aircraft glow, remain visible.</p>
 <p>Verbose diagnostic logging: {"Enabled" if CFG.get("verbose_logging", False) else "Disabled"}. Change it in App Configuration, save and restart. Motion rejection counts are available in /status and /motion/status.</p>
 <h2>Feed dependencies</h2><p>{s['feed_consumers']['external_count']} recent external client groups · {s['feed_consumers']['internal_count']} built-in map client groups (60-second window).</p>
 <p>Stopping or uninstalling this Bridge interrupts dependent applications. Address/user-agent groups may combine several apps; zero recent clients does not prove there are no dependencies. Client identifiers are self-reported.</p>
@@ -2233,12 +2376,12 @@ a{{color:#7db7ff}}button{{margin:4px 8px 4px 0;padding:7px 10px}}input[type=file
 </p>
 </section><section id="density-backup" style="border:2px solid #c5a02b;border-radius:6px;padding:1em;margin:1em 0"><h2>Traffic Density — {SOURCE_LABELS[CFG["source"]]}</h2>
 <p>Collected independently of this map. Recent view: 30 UTC calendar days. Monthly history: 18 months.</p>
-<p><label>Backup window: <select id="density-month"><option value="">All retained history</option></select></label> <a id="density-export" href="traffic-density/export" download="{export_name("traffic-density")}">Export density JSON</a> · <a href="traffic-density.geojson" download="{export_name("traffic-density","geojson")}">Export recent spatial cells (GeoJSON)</a> · <a href="traffic-density/status">Collection status</a></p>
-<p><input id="density-file" type="file" accept="application/json,.json"> <button id="density-import" type="button">Restore density JSON</button></p>
+<p><label>Backup window: <select id="density-month"><option value="">All retained history</option></select></label> <a id="density-export" href="traffic-density/export?compression=gzip" download="{export_name("traffic-density")}.gz">Export density JSON.gz</a> · <a href="traffic-density.geojson" download="{export_name("traffic-density","geojson")}">Export recent spatial cells (GeoJSON)</a> · <a href="traffic-density/status">Collection status</a></p>
+<p><input id="density-file" type="file" accept="application/json,application/gzip,.json,.gz"> <button id="density-import" type="button">Restore density JSON / gzip</button></p>
 <p><label><input id="density-legacy" type="checkbox"> This older, untagged backup belongs to {SOURCE_LABELS[CFG["source"]]}.</label></p>
 <p id="density-result">Restore selects whole cell/month snapshots; overlapping histories are never added.</p>
 <script>
-fetch('traffic-density/status').then(r=>r.json()).then(s=>{{const select=document.getElementById('density-month');for(const month of(s.months||[]).slice().reverse()){{const option=document.createElement('option');option.value=month;option.textContent=month;select.appendChild(option)}}select.addEventListener('change',()=>{{const link=document.getElementById('density-export');link.href='traffic-density/export'+(select.value?'?month='+encodeURIComponent(select.value):'');link.download='{SOURCE_PREFIXES[CFG['source']]}-traffic-density'+(select.value?'-'+select.value:'')+'.json'}})}}).catch(()=>{{}});
+fetch('traffic-density/status').then(r=>r.json()).then(s=>{{const select=document.getElementById('density-month');for(const month of(s.months||[]).slice().reverse()){{const option=document.createElement('option');option.value=month;option.textContent=month;select.appendChild(option)}}select.addEventListener('change',()=>{{const link=document.getElementById('density-export');link.href='traffic-density/export?compression=gzip'+(select.value?'&month='+encodeURIComponent(select.value):'');link.download='{SOURCE_PREFIXES[CFG['source']]}-traffic-density'+(select.value?'-'+select.value:'')+'.json.gz'}})}}).catch(()=>{{}});
 document.getElementById('density-import').addEventListener('click',async()=>{{const f=document.getElementById('density-file').files[0],out=document.getElementById('density-result');if(!f){{out.textContent='Select a density JSON export first.';return}}try{{out.textContent='Restoring…';const r=await fetch('traffic-density/import'+(document.getElementById('density-legacy').checked?'?legacy_source={CFG["source"]}':''),{{method:'POST',headers:{{'Content-Type':'application/json'}},body:f}});const x=await r.json();if(!r.ok)throw new Error(x.error||'Restore failed');out.textContent=`Restore complete: ${{x.added}} added, ${{x.replaced}} replaced, ${{x.retained}} retained; ${{x.ignored_months}} expired/future months ignored.`}}catch(e){{out.textContent=e.message}}}});
 </script>
 </section><section id="density-envelope-backup" style="border:2px solid #c5a02b;border-radius:6px;padding:1em;margin:1em 0"><h2>Density-derived envelopes — consistency comparison</h2>
@@ -2286,12 +2429,8 @@ for(const button of document.querySelectorAll('.clear-data'))button.addEventList
             if CFG["source"] in FAA_SOURCES:
                 html = html.replace('<a href="data/aircraft.json">/data/aircraft.json</a>', '<span>dump1090 output disabled</span>').replace('<a href="aircraft.json">/aircraft.json</a>', '<span>FAA local view only</span>')
                 html = html.replace("TFMS records", CFG["swim_product"].upper()+" records").replace("TFMS message", CFG["swim_product"].upper()+" message").replace("TFMS record", CFG["swim_product"].upper()+" record")
-                html = re.sub(r'<section id="density-envelope-backup".*?</section>', '', html, flags=re.S)
-                html = re.sub(r'<a id="density-export".*?</a>', '<span id="density-export">FAA exports disabled</span>', html)
-                html = re.sub(r'<a href="traffic-density.geojson".*?</a>', '', html)
             if CFG["source"] == "swim_sfdps":
                 html = html.replace('trackInformation identified', 'Surveillance positions identified').replace('First trackInformation structure', 'First surveillance-position structure')
-                html = re.sub(r'<section id="density-envelope-backup".*?</section>', '', html, flags=re.S)
             self.send_html(html)
             return
         self.send_json({"error": "not found", "path": path}, 404)

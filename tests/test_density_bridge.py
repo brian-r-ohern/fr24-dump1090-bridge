@@ -173,7 +173,7 @@ class DensityBridgeTests(unittest.TestCase):
             code,config=self.request('/map-config')
             self.assertEqual(config['coverage_outline_enabled'],source!='swim_tfms')
             if source=='swim_tfms':
-                self.assertEqual(self.request('/traffic-density/export')[0],403)
+                self.assertEqual(self.request('/traffic-density/export')[0],200)
             else:
                 with urlopen(self.base+'/traffic-density/export') as response:
                     self.assertEqual(response.headers['Content-Disposition'],'attachment; filename="'+prefix+'-traffic-density.json"')

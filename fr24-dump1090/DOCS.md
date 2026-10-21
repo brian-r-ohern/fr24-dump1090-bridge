@@ -1,8 +1,24 @@
+> **Before installing an update, press Ctrl+Shift+R to refresh this page.**
+
+## v0.7.2 operational changes
+
+Selected/all history downloads use `.geojson.gz`; decompress for QGIS. Full
+analytical records remain in `properties.record`. Selected filenames identify
+reported ICAO or local track ID. History retains up to one hour and clears on restart.
+Proximity lists up to ten aircraft within 10 NM horizontally, sorted by slant
+range when compatible altitude is available. Closure and CPA are horizontal;
+CPA/TCPA uses a five-minute constant-velocity model.
+Destination movement reads Moving toward / Moving away; near-neutral movement
+reads Little change in distance. Destination metadata age is unknown.
+Deliberate local FAA history/density/envelope downloads are enabled; automatic
+FAA aircraft-feed bridging remains disabled. These rules supersede historical
+restrictions in older development notes.
+
 # FR24 dump1090 Bridge — Home Assistant
 
-## v0.7.1 operation
+## Current operation (v0.7.2)
 
-The map offers an immediate **Auto / Light / Dark** theme selector. Destination popups may show a direct-distance/current-ground-speed ETA and, for qualifying aircraft, a separately labeled **experimental** modeled arrival range. Motion classifications and activity coloring depend on source quality; TFMS and coarse `flights.js` reports are excluded. Traffic density uses cached tiles and daily rollups. Density envelopes use optimized SQL aggregation and bounded NumPy batches; separate Load/Build controls preserve the last successful set across restarts. See the [changelog](CHANGELOG.md) for development history and the `docs/` testing records for validation.
+The map offers an immediate **Auto / Light / Dark** theme selector. Destination popups may show a direct-distance/current-ground-speed ETA and, for qualifying aircraft, a separately labeled **experimental** modeled touchdown range. Motion classifications and activity coloring depend on source quality; TFMS and coarse `flights.js` reports are excluded. Traffic density uses cached tiles and daily rollups. Density envelopes use optimized SQL aggregation and bounded NumPy batches; separate Load/Build controls preserve the last successful set across restarts. See the [changelog](CHANGELOG.md) for development history and the `docs/` testing records for validation.
 
 ## Configuration
 
@@ -13,7 +29,7 @@ The bridge supports five mutually exclusive aircraft input sources. Exactly one 
 - **dump1090/readsb JSON (`aircraft_json`) — alternate.** Polls a configured HTTP or HTTPS `aircraft.json` URL. The bridge validates the standard top-level aircraft array, normalizes ICAO `hex` values, preserves supplied aircraft fields, and republishes the selected source through the bridge endpoints.
 
 - **FAA SWIM TFMS (`swim_tfms`) — local-view-only.** Uses an authorized FAA Solace subscription; requires broker host/port, message VPN, username, password and queue. Positioned tracks are gated around Home Assistant Home.
-- **FAA SWIM SFDPS (`swim_sfdps`) — local-view-only.** Uses an authorized FAA Solace subscription for FIXM surveillance tracks, with local density and motion display. **Neither FAA source can publish aircraft feeds or general data exports.**
+- **FAA SWIM SFDPS (`swim_sfdps`) — local-view-only.** Uses an authorized FAA Solace subscription for FIXM surveillance tracks, with local density and motion display. **Neither FAA source publishes an automatic aircraft feed. Deliberate local analytical downloads are available.**
 
 Default operational values:
 
@@ -217,7 +233,7 @@ Page titles, density stores and backup names identify the selected source. The R
 
 ## Altitude heat maps and consistency envelopes
 
-The static sidebar title is Aircraft Bridge. Traffic Density supports Low/Middle/High combinations and All Traffic including Unknown. ADS-B maps offer on-demand dashed density envelopes for consistency comparison at 0.5°; the status page provides custom dates and JSON/GeoJSON exports. FAA data remains restricted to authorized local viewing; general export endpoints are disabled for FAA sources. See [usage and verification notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.6.x-development-validation.md). Stored altitude counters and backup schema are preserved.
+The static sidebar title is Aircraft Bridge. Traffic Density supports Low/Middle/High combinations and All Traffic including Unknown. ADS-B maps offer on-demand dashed density envelopes for consistency comparison at 0.5°; the status page provides custom dates and JSON/GeoJSON exports. FAA data remains restricted to authorized local viewing; deliberate density, envelope and history downloads are available for local retention and analysis. See [usage and verification notes](https://github.com/brian-r-ohern/fr24-dump1090-bridge/blob/main/docs/v0.6.x-development-validation.md). Stored altitude counters and backup schema are preserved.
 
 ## Density refresh and data management
 
@@ -292,3 +308,28 @@ Use **Build envelopes** to generate a new 30-day comparison, and **Load envelope
 Saved envelope builds are derived data. Normal new observations do not invalidate them; the displayed age identifies the snapshot. The saved UTC date window remains visible and is not silently shifted at midnight. There is one saved set per source, including when a custom date-window build replaces it. Range coverage remains independent.
 
 With `verbose_logging` enabled, `[DEBUG] Envelope diagnostics` reports a per-request ID, lock waits, snapshot bytes/copy time, SQL aggregation VM steps and grouped-cell counts, NumPy batch/cell counts, and stage elapsed times. Ordinary Data operation entries report total HTTP time. Build is still synchronous: large histories can take more than a minute and a client/proxy timeout does not cancel server work. Load does not perform the expensive calculation. Temporary snapshot/aggregation files require free disk space proportional to the stored history.
+
+
+## v0.7.2-dev.1 experimental geometry
+
+Map controls can be collapsed without resetting selections. New motion filters cover racetrack/holding-like, repeated orbit, orbit candidate, constant-radius turn and reversal. Expand Observed geometry in an aircraft popup for candidate/established status and evidence. Pattern evidence scores are uncalibrated, not probabilities of intent. Geometry takes color precedence over basic motion; badges/glow remain. Stale data suppresses patterns.
+
+At most 360 independent geometry positions / one hour per aircraft are held in memory. Restart or a source gap resets this history. Two circuits need to fit within that window; slow or large patterns can remain unclassified. Basic motion windows and existing density/range storage are unchanged. Motion summary logs include patterns, while status/verbose diagnostics report retained geometry samples/events. Exact gates and equations: [implemented geometry](../docs/motion-geometry-v0.7.2-dev.1.md).
+
+The experimental modeled ETA is labeled Estimated touchdown · modeled; its assumptions exclude taxiing and actual runway/approach routing. Observed orbit/racetrack defers that model, with direct/current-speed ETA retained. Go-around-like detection is not implemented in this preview.
+
+## Aircraft analytical history (dev.2)
+
+`/aircraft-history?hex=a248f9&download=1` downloads retained JSON by reported ICAO. Use `?track_id=...` for an exact local track, or `?download=1` for all retained tracks. Selected trails and exports work across sources, including FAA inputs, within the configured trusted network boundary. See [history design and tests](../docs/v0.7.2-dev.2-testing.md) for sampling, source provenance, replay, retention and applicable-use details.
+
+
+## v0.7.2-dev.4: airport context, compression and replay findings
+
+See [dev.4 design and validation](../docs/v0.7.2-dev.4-testing.md) for exact airport-context gates, compression/API compatibility and captured-record replay findings. Geometry remains independent of tentative airport activity; no new holding intent or go-around classifier is claimed. Whole-loop recognition with interrupted/variable-radius turns remains future work. ETT logic is unchanged in dev.4.
+
+History buttons now export selected/all retained aircraft as JSON.gz. Density backups stream JSON.gz and restore accepts JSON or gzip. Offline history replay accepts JSON, gzip and a ZIP containing one JSON file. Existing retention, source attribution and network access rules remain.
+
+
+## v0.7.2-dev.7 — SBS recovery and selected proximity preview
+
+The selected-aircraft proximity/CPA preview has been brought forward from the later roadmap milestone for evaluation. It does not complete all-pairs encounter detection. See [exact rules and validation](../docs/v0.7.2-dev.7-testing.md) for source-time alignment, altitude reference gates, bounded horizon, model quality, UI, endpoint and replay behavior. SBS byte-idle recovery reconnects silent sessions after 60 seconds.

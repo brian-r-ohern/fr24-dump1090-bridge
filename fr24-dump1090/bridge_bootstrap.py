@@ -4,7 +4,7 @@ import signal
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from bridge_settings import checked_options, read_options, save_snapshot, settings_page, settings_post
+from bridge_settings import VERSION, checked_options, read_options, save_snapshot, settings_page, settings_post
 
 
 class RecoveryHandler(BaseHTTPRequestHandler):
@@ -27,7 +27,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         if path == '/health':
             self.send_json({'service_status': 'ok', 'mode': 'settings_recovery', 'feed_status': 'not_configured'})
         elif path == '/status':
-            self.send_json({'build_version': '0.7.0', 'service_status': 'ok', 'mode': 'settings_recovery', 'feed_status': 'not_configured'})
+            self.send_json({'build_version': VERSION, 'service_status': 'ok', 'mode': 'settings_recovery', 'feed_status': 'not_configured'})
         elif path in ('/', '/settings', '/status-page'):
             self._send(settings_page(recovery_error=True).encode(), 'text/html; charset=utf-8')
         else:

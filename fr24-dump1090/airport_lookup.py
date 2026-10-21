@@ -19,6 +19,7 @@ class AirportLookup:
         self.path = Path(path)
         self._lock = threading.Lock()
         self._index = None
+        self._spatial = {}
 
     def _load(self):
         if self._index is not None:
@@ -60,6 +61,10 @@ class AirportLookup:
                               if identifiers.get(canonical) == record]
                 index[code] = candidates[0] if len(matches) == 1 and len(candidates) == 1 else None
             index.update(identifiers)
+            for record in identifiers.values():
+                if record:
+                    bucket=(math.floor(record['lat']), math.floor(record['lon']))
+                    self._spatial.setdefault(bucket, []).append(record)
             self._index = index
 
     def lookup_many(self, codes):
@@ -68,3 +73,13 @@ class AirportLookup:
         self._load()
         return {code: self._index.get(code) for value in codes
                 if (code := normalize_code(value))}
+
+    def nearby(self, lat, lon):
+        """Small spatial grid for airport context; exact distance checked by caller."""
+        self._load()
+        width=min(180, math.ceil(1/max(.01, math.cos(math.radians(lat)))))
+        result=[]
+        for y in range(max(-90,math.floor(lat)-1), min(89,math.floor(lat)+1)+1):
+            for x in range(math.floor(lon)-width,math.floor(lon)+width+1):
+                result.extend(self._spatial.get((y,(x+180)%360-180),[]))
+        return result

@@ -1,0 +1,11 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const html=fs.readFileSync(process.argv[2],'utf8'),start=html.indexOf('function proximityHtml('),end=html.indexOf('async function refreshProximity',start);
+const ctx=vm.createContext({esc:x=>String(x).replaceAll('<','&lt;').replaceAll('>','&gt;'),Math});vm.runInContext(html.slice(start,end),ctx);
+ctx.data={reason:'ok',pairs:[{flight:'<test>',horizontal_nm:2,vertical_ft:null,trend:'closing',cpa_nm:.5,tcpa_seconds:300,horizon_limited:true,vertical_at_cpa_ft:null,quality:'maneuvering_reduces_confidence'}]};
+let result=vm.runInContext('proximityHtml(data)',ctx);assert(result.includes('Window end:'));assert(result.includes('Unknown'));assert(result.includes('maneuvering reduces confidence'));assert(!result.includes('<test>'));assert(result.includes('No collision warning'));
+ctx.data.pairs[0].horizon_limited=false;result=vm.runInContext('proximityHtml(data)',ctx);assert(result.includes('in 300 s'));
+ctx.data={reason:'selected_position_missing_or_stale',pairs:[]};assert(vm.runInContext('proximityHtml(data)',ctx).includes('stale'));
+assert(html.includes('aircraft-proximity?track_id='));assert(html.includes('setInterval(refreshProximity,5000)'));assert(html.includes('refreshAnalysisTrail();refreshProximity()'));
+console.log('PASS proximity selection, informational labels, escaping, unknown altitude, horizon-boundary wording and stale status');
+ctx.data={reason:'ok',selected:'~id',selected_identity:{flight:'ABC123',icao_address:'abcdef'},pairs:[{flight:'Peer',horizontal_nm:.2,slant_nm:2.97,vertical_ft:18000,closing_knots:-85,trend:'opening',cpa_nm:null,vertical_at_cpa_ft:null,quality:'constant_velocity_baseline'}]};
+result=vm.runInContext('proximityHtml(data)',ctx);assert(result.includes('Selected: ABC123'));assert(result.includes('ICAO ABCDEF'));assert(result.includes('2.97 NM'));assert(result.includes('Opening 85 kt'));assert(result.includes('Closure (horizontal)'));
