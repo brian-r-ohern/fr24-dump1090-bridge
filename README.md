@@ -1,15 +1,4 @@
 > **Before installing an update, press Ctrl+Shift+R to refresh this page.**
-
-## v0.7.3 — usability, history and reliability
-
-- Selected aircraft show a reported-destination × and dashed line that persist after popup closure and update with the aircraft until another track is selected.
-- Cyan rings highlight projected passes within 3 NM slant range of Home in the next five minutes. A separate purple dashed halo marks fresh aircraft currently within 0.3333 NM horizontally, at any altitude. Both controls are under Motion.
-- Qualifying local routes retain up to 24 hours of observed sampled history on disk; other traffic keeps a rolling hour. Both reported airports must be covered, with observations within 10 NM of an endpoint. Export all combines both stores. Collection gaps and late acquisition can leave incomplete trips.
-- Configuration groups separate basic setup, personalization, integrations, additional local feeds, FAA SWIM and developer/troubleshooting options. Existing flat settings migrate with compatibility support.
-- Expanded popup facets survive SBS and other supported feed updates. Experimental day recording is hidden unless enabled in Developer / troubleshooting.
-
-Home predictions use constant observed velocity and approximate altitude references; they describe geometry, not intent or operational separation. Automatic FAA feed bridging remains disabled.
-
 # FR24 dump1090 Bridge
 
 **Live Tracking and Statistics in Home Assistant**
@@ -25,18 +14,16 @@ FR24 dump1090 Bridge functions as a lightweight, non-invasive local aircraft-dat
 
 The recommended/default input is a receiver's SBS/BaseStation TCP feed on port `30003`. An authenticated FR24 `/flights.js` feed or an existing dump1090/readsb `aircraft.json` feed can be selected as mutually exclusive alternatives. An FR24 receiver is therefore not required when a compatible `aircraft.json` source is already available. Authorized FAA SWIM TFMS and SFDPS are local-view-only alternatives; automatic FAA aircraft-feed routes remain disabled, while deliberate local analytical downloads are supported.
 
-## New in v0.7.2
-<img width="1535" height="180" alt="image" src="https://github.com/user-attachments/assets/e55170d6-77da-4574-b7d0-cd5fa6349783" />
+## New in v0.7.3
+<img width="1471" height="473" alt="image" src="https://github.com/user-attachments/assets/1d576f4f-4fda-4a7b-ae7f-cf59e126f13d" />
 
-* **Repeated motion geometry:** constant-radius turns, orbit candidates, repeated orbits, course reversals and racetrack/holding-like patterns, with supporting evidence and duration.
-* **Local track history:** a rolling hour of sampled observations, selected-aircraft trails and compressed GeoJSON exports for selected/all tracks. Selected downloads include the reported ICAO hex, with a local-ID fallback. GeoJSON display has been tested in QGIS.
-* **Nearby aircraft:** up to ten neighbors within 10 NM horizontally, ordered by approximate slant range, with horizontal/vertical separation, horizontal closing speed and five-minute constant-velocity CPA/TCPA estimates where supported.
-* **Destination movement:** Moving toward / Moving away labels relative to the last reported destination; sustained movement-away evidence is suppressed during established racetrack/repeated-orbit geometry. Destination metadata age is explicitly unknown.
-* **Usability and recovery:** expanded popup sections persist through updates, map controls collapse, source changes reload the map, and SBS byte-idle/status-only sessions reconnect.
-* **Touchdown estimates:** experimental modeled touchdown scenarios can respond to sustained observed descent.
+- Selected aircraft show a reported-destination × and dashed line that persist after popup closure and update with the aircraft until another track is selected.
+- Cyan rings highlight projected passes within 3 NM slant range of Home in the next five minutes. A separate purple dashed halo marks fresh aircraft currently within 0.3333 NM horizontally, at any altitude. Both controls are under Motion.
+- Qualifying local routes retain up to 24 hours of observed sampled history on disk; other traffic keeps a rolling hour. Both reported airports must be covered, with observations within 10 NM of an endpoint. Export all combines both stores. Collection gaps and late acquisition can leave incomplete trips.
+- Configuration groups separate basic setup, personalization, integrations, additional local feeds, FAA SWIM and developer/troubleshooting options. Existing flat settings migrate with compatibility support.
+- Expanded popup facets survive SBS and other supported feed updates. Experimental day recording is hidden unless enabled in Developer / troubleshooting.
 
-Motion and prediction thresholds remain experimental. Observations do not establish flight intent, a confirmed diversion, or unsafe separation. Go-around detection, formation analysis and richer composite sequences remain future work. Analytical history is transient and clears on restart. Deliberate local FAA analytical downloads are supported; automatic FAA aircraft-feed bridging remains disabled.
-
+Home predictions use constant observed velocity and approximate altitude references; they describe geometry, not intent or operational separation.
 
 ## Home Assistant installation
 
