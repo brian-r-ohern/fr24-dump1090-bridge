@@ -26,12 +26,15 @@ from feed_consumers import FeedConsumers
 from airport_lookup import AirportLookup
 from sbs_transport import received_chunks, MessageWatchdog
 from history_geojson import history_geojson
+from local_history import LocalHistory
+from history_recording import HistoryRecorder, process_memory
 from proximity import proximity_view
+from home_pass import home_passes
 from motion_state import MotionEngine
 from track_history import TrackHistory, allowed_peer, DEFAULT_NETWORKS
 from bridge_config import validate_options
 from bridge_settings import settings_page, settings_post
-from traffic_density import DensityStore
+from traffic_density import DensityStore, cell_id, parse_cell
 from density_archive import archive_file, geojson_file, restore_stream
 from density_envelopes import EnvelopeCache
 from pathlib import Path
@@ -42,7 +45,7 @@ from swim_sfdps import parse_sfdps_tracks
 from density_tiles import CacheNotReady
 from swim_tfms import SwimTfmsClient, parse_tfms_tracks, update_tfms_course
 
-BUILD_VERSION = "0.7.2"
+BUILD_VERSION = "0.7.3"
 airport_lookup = AirportLookup(Path(__file__).with_name('airports.json'))
 
 CONFIG_PATH = os.environ.get("FR24_OPTIONS_PATH", "/data/options.json")
@@ -375,6 +378,36 @@ density_store = None
 density_startup_error = None
 motion_engine = MotionEngine(CFG['source'])
 track_history = TrackHistory(CFG['source'])
+recording = None
+recording_lock = threading.RLock()
+recording_resource_at = 0
+local_history = None
+local_history_source = None
+local_history_last = 0
+
+def get_recorder():
+    global recording
+    with recording_lock:
+        if recording is None or recording.source != CFG['source']:
+            if recording is not None:recording.close()
+            recording = HistoryRecorder(os.environ.get('FR24_RECORDING_PATH','/data/aircraft-recording'),CFG['source'],BUILD_VERSION,
+                max_bytes=int(os.environ.get('FR24_RECORDING_MAX_BYTES',str(2*1024**3))))
+        return recording
+
+def close_recorder():
+    if recording is not None:recording.close()
+
+atexit.register(close_recorder)
+
+
+
+def map_motion_snapshot(keys=None,include_events=False):
+    result=get_motion_engine().snapshot(keys,include_events=include_events)
+    with lock:home=dict(home_marker) if home_marker else None
+    predictions=home_passes(track_history.kinematic_snapshot(),home)
+    for key,value in result['aircraft'].items():
+        if key in predictions:value['home_pass']=predictions[key]
+    return result
 
 
 def get_motion_engine():
@@ -386,16 +419,45 @@ def get_motion_engine():
 
 def collect_snapshot(aircraft, observed, source_now=None, metadata=None):
     """Independent transient analytics and existing persistent density collection."""
-    global track_history
+    global track_history, recording_resource_at, local_history, local_history_source, local_history_last
     get_motion_engine()
     if track_history.source != CFG['source']:track_history=TrackHistory(CFG['source'])
     try:
-        track_history.observe(aircraft, observed, source_now, metadata)
+        recorder=get_recorder()
+        if recorder.enabled:
+            resources=None
+            if observed-recording_resource_at>=60:
+                resources={'history':track_history.resource_status(),**process_memory()};recording_resource_at=observed
+            recorder.record(aircraft,observed,source_now,metadata,resources)
+    except Exception as exc:
+        print(f'[WARN] Recording collection failed: {type(exc).__name__}',flush=True)
+    try:
+        enriched=[]
+        for ac in aircraft:
+            item=dict(ac)
+            if CFG['source'] not in FAA_SOURCES:
+                extra=tracker_enrichment.get('aircraft',{}).get(str(ac.get('hex','')).lower(),{})
+                for field in ('route_origin','route_destination'):
+                    if extra.get(field):item[field]=extra[field]
+            enriched.append(item)
+        track_history.observe(enriched, observed, source_now, metadata)
     except Exception as exc:
         print(f'[WARN] History collection failed: {type(exc).__name__}',flush=True)
     try:
         motion_engine.observe(aircraft, observed, source_now, metadata)
         track_history.annotate(motion_engine, observed, airport_lookup)
+        if observed-local_history_last>=10:
+            if local_history is None or local_history_source!=CFG['source']:
+                local_history=LocalHistory(os.environ.get('FR24_LOCAL_HISTORY_PATH','/data/local-history'),CFG['source'])
+                local_history_source=CFG['source']
+            with track_history.lock:
+                coverage_cache={}
+                def covered(airport):
+                    code=airport['icao']
+                    if code not in coverage_cache:coverage_cache[code]=local_airport_covered(airport)
+                    return coverage_cache[code]
+                local_history.retain(track_history.tracks,observed,airport_lookup,covered)
+            local_history_last=observed
         motion_engine.last_error = None
         summary = motion_engine.periodic_summary(now=observed)
         if summary is not None:
@@ -541,8 +603,13 @@ def refresh_home_marker():
         radius = float(attrs.get("radius", 0))
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             raise ValueError("zone.home coordinates are out of range")
+        elevation = attrs.get('elevation')
+        if type(elevation) not in (int,float):
+            try:elevation = _supervisor_core_request('/config').get('elevation')
+            except Exception:elevation = None
+        elevation = float(elevation) if type(elevation) in (int,float) and math.isfinite(elevation) else None
         with lock:
-            home_marker = {"latitude": lat, "longitude": lon, "radius": max(0, radius)}
+            home_marker = {"latitude": lat, "longitude": lon, "radius": max(0, radius), "elevation_m": elevation}
             home_marker_last_success = time.time()
             home_marker_error = None
     except Exception as exc:
@@ -557,10 +624,29 @@ def home_marker_updater():
         time.sleep(300)
 
 
+def local_airport_covered(airport):
+    with lock:
+        marker=dict(home_marker) if home_marker else None
+        bins=list(coverage_bins)
+    if not marker:return False
+    distance,bearing=_coverage_distance_bearing(marker['latitude'],marker['longitude'],airport['lat'],airport['lon'])
+    if CFG['source'] in FAA_SOURCES:return distance<=CFG['swim_radius_nm']
+    item=bins[_coverage_index(bearing)]
+    if item and distance<=item.get('distance_nm',0):return True
+    if density_store is not None:
+        lat,lon=airport['lat'],airport['lon']
+        a=parse_cell(cell_id(max(-89.9,lat-.08),max(-180,lon-.1)))
+        b=parse_cell(cell_id(min(89.9,lat+.08),min(180,lon+.1)))
+        with density_store.lock:
+            for db in density_store.connections.values():
+                if db.execute('SELECT 1 FROM cell_locations WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ? LIMIT 1',(min(a[1],b[1]),max(a[1],b[1]),min(a[2],b[2]),max(a[2],b[2]))).fetchone():return True
+    return False
+
+
 def map_config():
     with lock:
         marker = dict(home_marker) if home_marker else None
-    return {"source": CFG["source"], "title": source_title(), "map_theme": CFG.get("map_theme","auto"), "verbose_logging": CFG.get("verbose_logging",False), "coverage_outline_enabled": CFG["source"] not in FAA_SOURCES, "home": marker, "destination_airport": CFG["destination_airport"] or None, "enrichment_source": "none" if CFG["source"] in FAA_SOURCES else CFG["enrichment_source"], "track_history_available": bool(CFG["history_url"]) and CFG["source"] not in FAA_SOURCES, "track_history_query": "callsign" if CFG["source"] in FAA_SOURCES else "hex"}
+    return {"source": CFG["source"], "title": source_title(), "development_recording": CFG.get("development_recording",False), "map_theme": CFG.get("map_theme","auto"), "verbose_logging": CFG.get("verbose_logging",False), "coverage_outline_enabled": CFG["source"] not in FAA_SOURCES, "home": marker, "destination_airport": CFG["destination_airport"] or None, "enrichment_source": "none" if CFG["source"] in FAA_SOURCES else CFG["enrichment_source"], "track_history_available": bool(CFG["history_url"]) and CFG["source"] not in FAA_SOURCES, "track_history_query": "callsign" if CFG["source"] in FAA_SOURCES else "hex"}
 
 
 def _coverage_distance_bearing(lat1, lon1, lat2, lon2):
@@ -1469,12 +1555,12 @@ html[data-map-palette="dark"] .leaflet-tile-pane{filter:invert(100%) hue-rotate(
 html[data-map-palette="light"] .leaflet-tile-pane{filter:none}
 html[data-map-palette="light"] #map{background:#ddd}
 .topbar{position:absolute;z-index:1000;top:10px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.90);color:#eee;border-radius:8px;padding:8px 12px;box-shadow:0 2px 8px #0008;display:flex;gap:12px;align-items:center;white-space:normal;flex-wrap:wrap;justify-content:center;max-width:calc(100vw - 44px);width:max-content;box-sizing:border-box}.topbar strong{font-size:14px}#map-controls{width:100%}#map-controls>summary{cursor:pointer;font-size:13px;min-height:24px}#map-controls[open]>summary{margin-bottom:6px}#map-controls>.analysis-row{margin-top:8px}.topbar{max-height:55vh;overflow:auto}.toolbar-main{display:flex;gap:8px 12px;align-items:center;justify-content:center;flex-wrap:wrap;width:100%}.analysis-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%;align-items:start}.analysis-controls{font-size:12px;min-width:0;border:1px solid #666;border-radius:5px;padding:6px 8px;box-sizing:border-box}.analysis-controls summary{cursor:pointer;min-height:24px}.analysis-body{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;padding-top:6px}.analysis-body>span{flex-basis:100%;font-size:11px;color:#ccc}.analysis-body label{white-space:normal}[hidden]{display:none!important}.stats{font-size:12px;color:#ccc}.ok{color:#6ddc79}.bad{color:#ff6b6b}.degraded{color:#ffd166}.btn{border:1px solid #666;background:#222;color:#eee;border-radius:5px;padding:5px 8px;cursor:pointer}.btn:hover{background:#333}
-.bottom-dock{position:absolute;z-index:1000;left:10px;right:10px;bottom:28px;display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px;pointer-events:none}.bottom-dock>*{pointer-events:auto;max-width:100%;box-sizing:border-box}.info{position:static;margin-left:auto;min-width:205px;background:rgba(17,17,17,.90);color:#ddd;border-radius:7px;padding:8px 10px;box-shadow:0 2px 8px #0008;font-size:11px}.info-title{font-weight:700;font-size:12px;cursor:pointer;min-height:28px;line-height:28px}.info-body{max-height:var(--status-body-height,40vh);overflow:auto;overscroll-behavior:contain}.info[open] .info-title{margin-bottom:5px}.info-grid{display:grid;grid-template-columns:auto auto;gap:2px 12px}.info-grid span:nth-child(odd){color:#aaa}.info-grid span:nth-child(even){text-align:right}.nav{border-top:1px solid #444;margin-top:6px;padding-top:5px;text-align:right}.nav a{color:#8fc1ff;text-decoration:none}.plane{position:relative;width:var(--plane-size,36px);height:var(--plane-size,36px);color:#1367a8;filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white);transform-origin:50% 50%}.plane svg{display:block;width:100%;height:100%;fill:currentColor}.plane.military{color:#22a447}.plane.closest{filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white) drop-shadow(0 0 4px #f33) drop-shadow(0 0 7px #f33)}.plane.destination::after,.plane.origin::after{position:absolute;right:-7px;top:-7px;font:700 9px/13px system-ui;color:#111;background:#ffd166;border:1px solid #7a5a00;border-radius:50%;width:13px;height:13px;text-align:center;transform:rotate(var(--counter-rotation,0deg))}.plane.destination::after{content:"D"}.plane.origin::after{content:"O"}.plane.origin.destination::after{content:"O/D";width:21px;right:-11px;border-radius:7px}.leaflet-popup-content{min-width:190px}.ac-title{font-weight:700;font-size:15px}.ac-flags{margin-top:4px;color:#b22;font-size:11px}.ac-grid{margin-top:6px;display:grid;grid-template-columns:auto auto;gap:2px 10px}.ac-grid span:nth-child(odd){color:#666}.home-marker{width:28px;height:28px;filter:drop-shadow(0 0 2px white) drop-shadow(0 0 2px white)}.home-marker svg{display:block;width:28px;height:28px}.trackbox{display:none;position:static;min-width:0;background:rgba(17,17,17,.90);color:#eee;border-radius:7px;padding:7px 8px;box-shadow:0 2px 8px #0008;font-size:11px}.trackbox input{width:78px;background:#222;color:#eee;border:1px solid #666;border-radius:4px;padding:4px;text-transform:uppercase}.trackbox .btn{padding:4px 6px}.track-status{margin-left:5px;color:#bbb}
+.bottom-dock{position:absolute;z-index:1000;left:10px;right:10px;bottom:28px;display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px;pointer-events:none}.bottom-dock>*{pointer-events:auto;max-width:100%;box-sizing:border-box}.info{position:static;margin-left:auto;min-width:205px;background:rgba(17,17,17,.90);color:#ddd;border-radius:7px;padding:8px 10px;box-shadow:0 2px 8px #0008;font-size:11px}.info-title{font-weight:700;font-size:12px;cursor:pointer;min-height:28px;line-height:28px}.info-body{max-height:var(--status-body-height,40vh);overflow:auto;overscroll-behavior:contain}.info[open] .info-title{margin-bottom:5px}.info-grid{display:grid;grid-template-columns:auto auto;gap:2px 12px}.info-grid span:nth-child(odd){color:#aaa}.info-grid span:nth-child(even){text-align:right}.nav{border-top:1px solid #444;margin-top:6px;padding-top:5px;text-align:right}.nav a{color:#8fc1ff;text-decoration:none}.plane{position:relative;width:var(--plane-size,36px);height:var(--plane-size,36px);color:#1367a8;filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white);transform-origin:50% 50%}.plane.home-pass::before{content:"";position:absolute;inset:-6px;border:2px solid #36e4e8;border-radius:50%;box-shadow:0 0 5px #36e4e8;pointer-events:none}.plane.overhead{outline:3px dashed #d291ff;outline-offset:9px;border-radius:50%}.plane svg{display:block;width:100%;height:100%;fill:currentColor}.plane.military{color:#22a447}.plane.closest{filter:drop-shadow(0 0 1px white) drop-shadow(0 0 1px white) drop-shadow(0 0 4px #f33) drop-shadow(0 0 7px #f33)}.plane.destination::after,.plane.origin::after{position:absolute;right:-7px;top:-7px;font:700 9px/13px system-ui;color:#111;background:#ffd166;border:1px solid #7a5a00;border-radius:50%;width:13px;height:13px;text-align:center;transform:rotate(var(--counter-rotation,0deg))}.plane.destination::after{content:"D"}.plane.origin::after{content:"O"}.plane.origin.destination::after{content:"O/D";width:21px;right:-11px;border-radius:7px}.leaflet-popup-content{min-width:190px}.ac-title{font-weight:700;font-size:15px}.ac-flags{margin-top:4px;color:#b22;font-size:11px}.ac-grid{margin-top:6px;display:grid;grid-template-columns:auto auto;gap:2px 10px}.ac-grid span:nth-child(odd){color:#666}.home-marker{width:28px;height:28px;filter:drop-shadow(0 0 2px white) drop-shadow(0 0 2px white)}.home-marker svg{display:block;width:28px;height:28px}.trackbox{display:none;position:static;min-width:0;background:rgba(17,17,17,.90);color:#eee;border-radius:7px;padding:7px 8px;box-shadow:0 2px 8px #0008;font-size:11px}.trackbox input{width:78px;background:#222;color:#eee;border:1px solid #666;border-radius:4px;padding:4px;text-transform:uppercase}.trackbox .btn{padding:4px 6px}.track-status{margin-left:5px;color:#bbb}
 @media (max-width:900px),(max-height:600px){.topbar{left:60px;right:10px;top:10px;transform:none;max-width:none;width:auto;gap:5px 8px;padding:7px 9px}.topbar strong{min-width:0}.bottom-dock{left:8px;right:8px}.info{min-width:0}.track-status{overflow-wrap:anywhere}}
 @media (max-width:600px){.toolbar-main{justify-content:flex-start}.analysis-row{grid-template-columns:minmax(0,1fr)}.info-grid{grid-template-columns:minmax(0,1fr) auto}.info-grid span{overflow-wrap:anywhere}}
 
 #history-controls{display:flex;flex-wrap:wrap;align-items:center;gap:5px;max-width:min(520px,100%)}#history-controls input{width:auto}#analysis-history-status{flex-basis:100%;overflow-wrap:anywhere}
-</style></head><body><div id="map"></div><div class="topbar"><details id="map-controls" open><summary>Map controls</summary><div class="toolbar-main"><strong>__SOURCE_TITLE__</strong><span id="stats" class="stats">Loading aircraft…</span><label style="font-size:12px">Map theme <select class="btn" id="map-theme" aria-label="Map theme"><option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option></select></label><button class="btn" id="fit">Fit aircraft</button><button class="btn" id="density-refresh" hidden>Load density</button><button class="btn" id="density-force" hidden title="Rebuild visible density tiles now">Refresh now</button><label style="font-size:12px"><input id="density-toggle" type="checkbox"> Traffic Density</label><span id="density-state" style="font-size:11px"></span><label id="range-control" style="font-size:12px"><input id="range-toggle" type="checkbox" checked> Range ring</label></div><div class="analysis-row"><details id="motion-options" class="analysis-controls" hidden><summary>Motion · <span id="motion-total">Loading</span></summary><div class="analysis-body"><label><input id="motion-colors" type="checkbox"> Color aircraft by motion</label><label><input class="motion-filter" value="all" type="checkbox" checked> All aircraft <b id="motion-count-all">0</b></label><label><span aria-hidden="true" style="color:#49bde0">●</span> <input class="motion-filter" value="steady_flight" type="checkbox"> Steady flight <b id="motion-count-steady_flight">0</b></label><label><span aria-hidden="true" style="color:#4cce75">●</span> <input class="motion-filter" value="climbing" type="checkbox"> Climbing <b id="motion-count-climbing">0</b></label><label><span aria-hidden="true" style="color:#ff9b46">●</span> <input class="motion-filter" value="descending" type="checkbox"> Descending <b id="motion-count-descending">0</b></label><label><span aria-hidden="true" style="color:#bd91ff">●</span> <input class="motion-filter" value="turning_left" type="checkbox"> Turning left <b id="motion-count-turning_left">0</b></label><label><span aria-hidden="true" style="color:#bd91ff">●</span> <input class="motion-filter" value="turning_right" type="checkbox"> Turning right <b id="motion-count-turning_right">0</b></label><label><span aria-hidden="true" style="color:#ff6d99">●</span> <input class="motion-filter" value="decelerating" type="checkbox"> Decelerating <b id="motion-count-decelerating">0</b></label><label><span aria-hidden="true" style="color:#ffe066">●</span> <input class="motion-filter" value="accelerating" type="checkbox"> Accelerating <b id="motion-count-accelerating">0</b></label><label><input class="motion-filter" value="racetrack" type="checkbox"> Racetrack / holding-like <b id="motion-count-racetrack">0</b></label><label><input class="motion-filter" value="repeated_orbit" type="checkbox"> Repeated orbit <b id="motion-count-repeated_orbit">0</b></label><label><input class="motion-filter" value="orbit" type="checkbox"> Orbit candidate <b id="motion-count-orbit">0</b></label><label><input class="motion-filter" value="constant_radius_turn" type="checkbox"> Constant-radius turn <b id="motion-count-constant_radius_turn">0</b></label><label><input class="motion-filter" value="course_reversal" type="checkbox"> Course reversal <b id="motion-count-course_reversal">0</b></label><label><input class="motion-filter" value="warming_up" type="checkbox"> Warming up <b id="motion-count-warming_up">0</b></label><label><input class="motion-filter" value="stale" type="checkbox"> Stale <b id="motion-count-stale">0</b></label><label><input class="motion-filter" value="other" type="checkbox"> Other / collecting <b id="motion-count-other">0</b></label><span id="motion-view-status"></span></div></details><details id="density-options" class="analysis-controls" hidden><summary>Density altitude selection</summary><div class="analysis-body"><label><input class="density-band" value="low" type="checkbox"> Low &lt; 1,200 ft</label><label><input class="density-band" value="middle" type="checkbox"> Middle 1,200–17,999 ft</label><label><input class="density-band" value="high" type="checkbox"> High ≥ 18,000 ft</label><label><input class="density-band" value="all" type="checkbox" checked> All Traffic (includes Unknown)</label></div></details><details id="proximity-control" class="analysis-controls"><summary>Proximity / CPA · <span id="proximity-selected">select aircraft</span></summary><div class="analysis-body"><label><input id="proximity-toggle" type="checkbox"> Show nearby aircraft</label><span>10 NM horizontal · nearest 10 by slant range · five-minute constant-velocity window · informational</span><div id="proximity-results">Select an aircraft and enable proximity.</div></div></details><details id="envelope-control" class="analysis-controls"><summary>Density envelopes · comparison</summary><div class="analysis-body"><span>30 days · cell centers · 0.5° bearings</span><button class="btn" id="envelope-load" disabled>Load envelopes</button><span id="envelope-age">Checking saved envelopes…</span><button class="btn" id="envelope-generate">Build envelopes</button><label style="color:#33d6dc"><input class="envelope-band" value="all" type="checkbox"> All</label><label style="color:#59d86b"><input class="envelope-band" value="low" type="checkbox" checked> Low</label><label style="color:#ffaa33"><input class="envelope-band" value="middle" type="checkbox" checked> Middle</label><label style="color:#ca8cff"><input class="envelope-band" value="high" type="checkbox" checked> High</label><span id="envelope-state">Load the last build or build a new comparison; existing range ring remains authoritative.</span></div></details></div></details></div><div class="bottom-dock"><div id="history-controls" class="trackbox"><label><input id="analysis-trail-toggle" type="checkbox" checked> Selected trail</label> <button class="btn" id="analysis-export">Export selected</button> <button class="btn" id="analysis-export-all">Export all</button> <span id="analysis-history-status">Select an aircraft</span></div><div id="trackbox" class="trackbox"><input id="trackhex" maxlength="6" placeholder="ICAO hex"><button class="btn" id="trackshow">Track</button><button class="btn" id="trackclear">Clear</button><span id="trackstatus" class="track-status"></span></div><details id="bridge-info" class="info" open><summary class="info-title">Bridge status</summary><div class="info-body"><div id="info-grid" class="info-grid"><span>Feed</span><span>Loading…</span></div><div class="nav"><a href="status-page">Status</a> · <a href="data/aircraft.json">aircraft.json</a></div></div></details></div>
+</style></head><body><div id="map"></div><div class="topbar"><details id="map-controls" open><summary>Map controls</summary><div class="toolbar-main"><strong>__SOURCE_TITLE__</strong><span id="stats" class="stats">Loading aircraft…</span><label style="font-size:12px">Map theme <select class="btn" id="map-theme" aria-label="Map theme"><option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option></select></label><button class="btn" id="fit">Fit aircraft</button><button class="btn" id="density-refresh" hidden>Load density</button><button class="btn" id="density-force" hidden title="Rebuild visible density tiles now">Refresh now</button><label style="font-size:12px"><input id="density-toggle" type="checkbox"> Traffic Density</label><span id="density-state" style="font-size:11px"></span><label id="range-control" style="font-size:12px"><input id="range-toggle" type="checkbox" checked> Range ring</label></div><div class="analysis-row"><details id="motion-options" class="analysis-controls" hidden><summary>Motion · <span id="motion-total">Loading</span></summary><div class="analysis-body"><label><input id="overhead-highlight" type="checkbox" checked> Highlight overhead · ≤0.3333 NM horizontal / any altitude</label><label><input id="home-pass-highlight" type="checkbox" checked> Highlight projected near Home · ≤3 NM slant / 5 min</label><label><input id="motion-colors" type="checkbox"> Color aircraft by motion</label><label><input class="motion-filter" value="all" type="checkbox" checked> All aircraft <b id="motion-count-all">0</b></label><label><span aria-hidden="true" style="color:#49bde0">●</span> <input class="motion-filter" value="steady_flight" type="checkbox"> Steady flight <b id="motion-count-steady_flight">0</b></label><label><span aria-hidden="true" style="color:#4cce75">●</span> <input class="motion-filter" value="climbing" type="checkbox"> Climbing <b id="motion-count-climbing">0</b></label><label><span aria-hidden="true" style="color:#ff9b46">●</span> <input class="motion-filter" value="descending" type="checkbox"> Descending <b id="motion-count-descending">0</b></label><label><span aria-hidden="true" style="color:#bd91ff">●</span> <input class="motion-filter" value="turning_left" type="checkbox"> Turning left <b id="motion-count-turning_left">0</b></label><label><span aria-hidden="true" style="color:#bd91ff">●</span> <input class="motion-filter" value="turning_right" type="checkbox"> Turning right <b id="motion-count-turning_right">0</b></label><label><span aria-hidden="true" style="color:#ff6d99">●</span> <input class="motion-filter" value="decelerating" type="checkbox"> Decelerating <b id="motion-count-decelerating">0</b></label><label><span aria-hidden="true" style="color:#ffe066">●</span> <input class="motion-filter" value="accelerating" type="checkbox"> Accelerating <b id="motion-count-accelerating">0</b></label><label><input class="motion-filter" value="racetrack" type="checkbox"> Racetrack / holding-like <b id="motion-count-racetrack">0</b></label><label><input class="motion-filter" value="repeated_orbit" type="checkbox"> Repeated orbit <b id="motion-count-repeated_orbit">0</b></label><label><input class="motion-filter" value="orbit" type="checkbox"> Orbit candidate <b id="motion-count-orbit">0</b></label><label><input class="motion-filter" value="constant_radius_turn" type="checkbox"> Constant-radius turn <b id="motion-count-constant_radius_turn">0</b></label><label><input class="motion-filter" value="course_reversal" type="checkbox"> Course reversal <b id="motion-count-course_reversal">0</b></label><label><input class="motion-filter" value="warming_up" type="checkbox"> Warming up <b id="motion-count-warming_up">0</b></label><label><input class="motion-filter" value="stale" type="checkbox"> Stale <b id="motion-count-stale">0</b></label><label><input class="motion-filter" value="other" type="checkbox"> Other / collecting <b id="motion-count-other">0</b></label><span id="motion-view-status"></span></div></details><details id="density-options" class="analysis-controls" hidden><summary>Density altitude selection</summary><div class="analysis-body"><label><input class="density-band" value="low" type="checkbox"> Low &lt; 1,200 ft</label><label><input class="density-band" value="middle" type="checkbox"> Middle 1,200–17,999 ft</label><label><input class="density-band" value="high" type="checkbox"> High ≥ 18,000 ft</label><label><input class="density-band" value="all" type="checkbox" checked> All Traffic (includes Unknown)</label></div></details><details id="proximity-control" class="analysis-controls"><summary>Proximity / CPA · <span id="proximity-selected">select aircraft</span></summary><div class="analysis-body"><label><input id="proximity-toggle" type="checkbox"> Show nearby aircraft</label><span>10 NM horizontal · nearest 10 by slant range · five-minute constant-velocity window · informational</span><div id="proximity-results">Select an aircraft and enable proximity.</div></div></details><details id="recording-control" class="analysis-controls" hidden><summary>Development recording · <span id="recording-summary">off</span></summary><div class="analysis-body"><span>Record up to 24 hours for local analysis. Recording resumes after an app restart until its original end time.</span><button class="btn" id="recording-start">Start 24-hour recording</button><button class="btn" id="recording-stop" disabled>Stop recording</button><button class="btn" id="recording-export" disabled>Export recorded day</button><button class="btn" id="recording-replay" disabled>Export replay snapshots</button><span id="recording-status">Checking recording status…</span><span id="recording-resources"></span></div></details><details id="envelope-control" class="analysis-controls"><summary>Density envelopes · comparison</summary><div class="analysis-body"><span>30 days · cell centers · 0.5° bearings</span><button class="btn" id="envelope-load" disabled>Load envelopes</button><span id="envelope-age">Checking saved envelopes…</span><button class="btn" id="envelope-generate">Build envelopes</button><label style="color:#33d6dc"><input class="envelope-band" value="all" type="checkbox"> All</label><label style="color:#59d86b"><input class="envelope-band" value="low" type="checkbox" checked> Low</label><label style="color:#ffaa33"><input class="envelope-band" value="middle" type="checkbox" checked> Middle</label><label style="color:#ca8cff"><input class="envelope-band" value="high" type="checkbox" checked> High</label><span id="envelope-state">Load the last build or build a new comparison; existing range ring remains authoritative.</span></div></details></div></details></div><div class="bottom-dock"><div id="history-controls" class="trackbox"><label><input id="analysis-trail-toggle" type="checkbox" checked> Selected trail</label> <button class="btn" id="analysis-export">Export selected</button> <button class="btn" id="analysis-export-all">Export all</button> <span id="analysis-history-status">Select an aircraft</span></div><div id="trackbox" class="trackbox"><input id="trackhex" maxlength="6" placeholder="ICAO hex"><button class="btn" id="trackshow">Track</button><button class="btn" id="trackclear">Clear</button><span id="trackstatus" class="track-status"></span></div><details id="bridge-info" class="info" open><summary class="info-title">Bridge status</summary><div class="info-body"><div id="info-grid" class="info-grid"><span>Feed</span><span>Loading…</span></div><div class="nav"><a href="status-page">Status</a> · <a href="data/aircraft.json">aircraft.json</a></div></div></details></div>
 <script id="overlay-layout">
 (()=>{
   const info=document.getElementById('bridge-info'),body=info.querySelector('.info-body'),summary=info.querySelector('summary'),bar=document.querySelector('.topbar'),dock=document.querySelector('.bottom-dock'),track=document.getElementById('trackbox'),surface=document.getElementById('map');
@@ -1599,7 +1685,7 @@ function modeledArrivalHtml(ac,t,estimate){
   const key=String(ac.hex||'').toLowerCase(),state=typeof currentMotionState==='function'?currentMotionState(key):null,result=modeledArrival(ac,t,estimate,state);
   if(!result.available)return '<span>Modeled touchdown</span><b>'+esc(result.reason)+(Number.isFinite(result.extraDistanceNm)?' (~'+Math.ceil(result.extraDistanceNm)+' NM additional path in these scenarios)':'')+'</b>';
   const low=Math.floor(result.minimumMinutes),high=Math.ceil(result.maximumMinutes),format=minutes=>{const value=new Date(Date.now()+minutes*60000).toISOString(),today=new Date().toISOString().slice(0,10);return(value.slice(0,10)===today?'':value.slice(0,10)+' ')+value.slice(11,16)+' UTC'};
-  return '<span title="Experimental transport-jet scenarios, not a clearance, safety calculation or validated landing forecast">Estimated touchdown · modeled</span><b>~'+low+'–'+high+' min ('+esc(format(result.minimumMinutes))+' – '+esc(format(result.maximumMinutes))+')</b><span>Touchdown assumptions</span><b><details><summary>Descent + slowdown; jet scenarios</summary><div>'+esc(result.altitudeBasis)+'<br>Stage: '+esc(result.stage)+'. Sustained descent uses a bounded observed rate above 10,000 ft; remaining distance may require a level-off allowance.<br>Altitude bands: above 10,000 ft, 10,000–3,000 ft, below 3,000 ft above airport.<br>Faster descent: 3,000 / 1,500 / 900 ft/min; ground-speed endpoints: 250 / 180 / 150 kt.<br>Slower descent: 1,500 / 1,000 / 600 ft/min; ground-speed endpoints: 230 / 160 / 130 kt.<br>Slowdown is linear within each phase. These are assumed ground speeds, not indicated-airspeed limits. Travel and descent overlap. Airport-center distance; no runway, vectors, wind correction or holding. Range is a scenario bracket, not statistical confidence.</div></details></b>';
+  return '<span title="Experimental transport-jet scenarios, not a clearance, safety calculation or validated landing forecast">Estimated touchdown · modeled</span><b>~'+low+'–'+high+' min ('+esc(format(result.minimumMinutes))+' – '+esc(format(result.maximumMinutes))+')</b><span>Touchdown assumptions</span><b><details data-popup-section="touchdown-assumptions"><summary>Descent + slowdown; jet scenarios</summary><div>'+esc(result.altitudeBasis)+'<br>Stage: '+esc(result.stage)+'. Sustained descent uses a bounded observed rate above 10,000 ft; remaining distance may require a level-off allowance.<br>Altitude bands: above 10,000 ft, 10,000–3,000 ft, below 3,000 ft above airport.<br>Faster descent: 3,000 / 1,500 / 900 ft/min; ground-speed endpoints: 250 / 180 / 150 kt.<br>Slower descent: 1,500 / 1,000 / 600 ft/min; ground-speed endpoints: 230 / 160 / 130 kt.<br>Slowdown is linear within each phase. These are assumed ground speeds, not indicated-airspeed limits. Travel and descent overlap. Airport-center distance; no runway, vectors, wind correction or holding. Range is a scenario bracket, not statistical confidence.</div></details></b>';
 }
 function destinationEstimateHtml(ac,t){
   const estimate=destinationEstimate(ac,t);if(!estimate)return '';
@@ -1629,6 +1715,15 @@ function currentMotionState(key){
   const age=Number(state.position_age_seconds)+(Date.now()/1000-Number(state.fetched_at||Date.now()/1000));
   return age>motionFreshSeconds?{...state,quality:'stale',primitives:[],patterns:[]}:state;
 }
+function homePassFor(key){
+  const state=currentMotionState(key),p=state?.home_pass;
+  if(!p||state.quality==='stale'||Date.now()/1000-p.predicted_at>motionFreshSeconds)return null;
+  return p;
+}
+function homePassHtml(key){
+  const p=homePassFor(key);if(!p)return '';
+  return '<span>Projected near Home</span><b>'+esc(p.slant_nm.toFixed(2))+' NM slant in '+esc(Math.round(p.seconds))+' s'+(p.horizon_limited?' · window end':'')+'<br><small>'+esc(p.horizontal_nm.toFixed(2))+' NM horizontal · '+esc(p.vertical_ft)+' ft vertical · '+esc(p.altitude_basis.replaceAll('_',' '))+'<br>Constant observed velocity · approximate'+(p.quality==='maneuvering_reduces_confidence'?' · maneuvering reduces confidence':'')+'</small></b>';
+}
 function motionLabels(key){
   const state=currentMotionState(key);if(!state)return ['other'];
   if(['stale','warming_up'].includes(state.quality))return [state.quality];
@@ -1637,6 +1732,12 @@ function motionLabels(key){
 }
 function matchesMotion(key,selected){return selected.includes('all')||motionLabels(key).some(label=>selected.includes(label))}
 function motionColor(key,enabled){if(!enabled)return null;const labels=motionLabels(key);for(const name of Object.keys(motionPalette))if(labels.includes(name))return motionPalette[name];return null}
+function overheadNow(marker){
+  const ac=marker.bridgeAircraft,limit=inputSource==='swim_sfdps'?45:15;
+  if(!homeLatLng||!ac||!Number.isFinite(ac.seen_pos)||ac.seen_pos<0||ac.seen_pos>limit)return false;
+  const pos=marker.getLatLng();
+  return map.distance(pos,homeLatLng)<=0.3333*1852;
+}
 function applyMotionView(){
   const eligible=['sbs_30003','aircraft_json','swim_sfdps'].includes(inputSource),panel=document.getElementById('motion-options');panel.hidden=!eligible;
   const selected=[...document.querySelectorAll('.motion-filter:checked')].map(el=>el.value),colored=eligible&&document.getElementById('motion-colors').checked;
@@ -1645,7 +1746,7 @@ function applyMotionView(){
     for(const label of new Set(motionLabels(key)))counts[label]=(counts[label]||0)+1;
     const show=!eligible||matchesMotion(key,selected);
     if(show){if(!map.hasLayer(m))m.addTo(map);points.push(m.getLatLng());visible++}else if(map.hasLayer(m))map.removeLayer(m);
-    if(m.bridgeVisual)m.setIcon(icon(m.bridgeVisual.degrees,{...m.bridgeVisual.flags,motionColor:motionColor(key,colored)}));
+    if(m.bridgeVisual)m.setIcon(icon(m.bridgeVisual.degrees,{...m.bridgeVisual.flags,motionColor:motionColor(key,colored),homePass:document.getElementById('home-pass-highlight').checked&&homePassFor(key)!==null,overhead:document.getElementById('overhead-highlight').checked&&overheadNow(m)}));
   }
   for(const el of document.querySelectorAll('.motion-filter')){const count=document.getElementById('motion-count-'+el.value);if(count)count.textContent=counts[el.value]||0}
   document.getElementById('motion-total').textContent=visible+' / '+markers.size+' shown';
@@ -1681,19 +1782,21 @@ function updateAircraftPopup(marker,html){
   if(nextContent)nextContent.scrollTop=scrollTop;
   if(focusKey)for(const detail of updated?.querySelectorAll('details[data-popup-section]')||[])if(detail.dataset.popupSection===focusKey)detail.querySelector('summary')?.focus({preventScroll:true});
 }
-function popup(ac,flags,key,orientation){const t=trackerFor(key),title=(t.flight||ac.flight||'').trim()||ac.hex.toUpperCase(),tail=t.tail&&t.tail!=='Unknown'?t.tail:null,type=[t.aircraft_type,t.description&&t.description!=='Unknown aircraft'?t.description:null].filter(Boolean).join(' · '),badges=[];if(flags.military)badges.push('MILITARY');if(flags.closest)badges.push('CLOSEST');if(flags.origin)badges.push(`ORIGIN: ${destinationAirport}`);if(flags.destination)badges.push(`DESTINATION: ${destinationAirport}`);const route=(t.route_origin||t.route_destination)?`${esc(t.route_origin||'—')}${t.route_origin_name?` (${esc(t.route_origin_name)})`:''} → ${esc(t.route_destination||'—')}${t.route_destination_name?` (${esc(t.route_destination_name)})`:''}`:null;const enriched=[tail?`<span>Registration</span><b>${esc(tail)}</b>`:'',type?`<span>Aircraft</span><b>${esc(type)}</b>`:'',route?`<span>Route</span><b>${route}</b>`:'',t.distance_display?`<span>Distance</span><b>${esc(t.distance_display)}</b>`:''].join('');const tfmsMeta=['airline','route_origin','route_destination','aircraft_category','user_category','arrival_time','position_time','assigned_altitude_raw'].filter(k=>ac[k]).map(k=>'<span>'+esc(k.replaceAll('_',' '))+'</span><b>'+esc(ac[k])+'</b>').join('');const badgeHtml=badges.length?`<div class="ac-flags">${badges.map(x=>`<b>${esc(x)}</b>`).join(' · ')}</div>`:'';const trackText=orientation.degrees==null?'—':`${orientation.degrees.toFixed(1)}° (${cardinalDirection(orientation.degrees)})${(orientation.source==='calculated'||ac.track_source==='calculated')?' (course)':''}`;return `<div class="ac-title">${esc(title)}</div>${badgeHtml}<div class="ac-grid">${enriched}${tfmsMeta}${destinationEstimateHtml(ac,t)}${motionStateHtml(key)}<span>${['swim_tfms','swim_sfdps'].includes(inputSource)?'Local track':'ICAO'}</span><b>${esc(ac.hex.toUpperCase())}</b>${ac.icao_address?'<span>Reported ICAO</span><b>'+esc(ac.icao_address.toUpperCase())+'</b>':''}<span>Altitude</span><b>${altitude(ac.alt_baro)}</b><span>${inputSource==='swim_sfdps'?'Reported ground speed':'Ground speed'}</span><b>${fmt(ac.gs,' kt')}</b><span>Track/course</span><b>${trackText}</b><span>Vertical rate</span><b>${signed(ac.baro_rate)}</b><span>Squawk</span><b>${fmt(ac.squawk)}</b><span>Last message</span><b>${fmt(ac.seen,' sec')}</b><span>Last position</span><b>${fmt(ac.seen_pos,' sec')}</b></div>`}
+function popup(ac,flags,key,orientation){const t=trackerFor(key),title=(t.flight||ac.flight||'').trim()||ac.hex.toUpperCase(),tail=t.tail&&t.tail!=='Unknown'?t.tail:null,type=[t.aircraft_type,t.description&&t.description!=='Unknown aircraft'?t.description:null].filter(Boolean).join(' · '),badges=[];if(flags.military)badges.push('MILITARY');if(flags.closest)badges.push('CLOSEST');if(flags.origin)badges.push(`ORIGIN: ${destinationAirport}`);if(flags.destination)badges.push(`DESTINATION: ${destinationAirport}`);const route=(t.route_origin||t.route_destination)?`${esc(t.route_origin||'—')}${t.route_origin_name?` (${esc(t.route_origin_name)})`:''} → ${esc(t.route_destination||'—')}${t.route_destination_name?` (${esc(t.route_destination_name)})`:''}`:null;const enriched=[tail?`<span>Registration</span><b>${esc(tail)}</b>`:'',type?`<span>Aircraft</span><b>${esc(type)}</b>`:'',route?`<span>Route</span><b>${route}</b>`:'',t.distance_display?`<span>Distance</span><b>${esc(t.distance_display)}</b>`:''].join('');const tfmsMeta=['airline','route_origin','route_destination','aircraft_category','user_category','arrival_time','position_time','assigned_altitude_raw'].filter(k=>ac[k]).map(k=>'<span>'+esc(k.replaceAll('_',' '))+'</span><b>'+esc(ac[k])+'</b>').join('');const badgeHtml=badges.length?`<div class="ac-flags">${badges.map(x=>`<b>${esc(x)}</b>`).join(' · ')}</div>`:'';const trackText=orientation.degrees==null?'—':`${orientation.degrees.toFixed(1)}° (${cardinalDirection(orientation.degrees)})${(orientation.source==='calculated'||ac.track_source==='calculated')?' (course)':''}`;return `<div class="ac-title">${esc(title)}</div>${badgeHtml}<div class="ac-grid">${enriched}${tfmsMeta}${destinationEstimateHtml(ac,t)}${motionStateHtml(key)}${homePassHtml(key)}<span>${['swim_tfms','swim_sfdps'].includes(inputSource)?'Local track':'ICAO'}</span><b>${esc(ac.hex.toUpperCase())}</b>${ac.icao_address?'<span>Reported ICAO</span><b>'+esc(ac.icao_address.toUpperCase())+'</b>':''}<span>Altitude</span><b>${altitude(ac.alt_baro)}</b><span>${inputSource==='swim_sfdps'?'Reported ground speed':'Ground speed'}</span><b>${fmt(ac.gs,' kt')}</b><span>Track/course</span><b>${trackText}</b><span>Vertical rate</span><b>${signed(ac.baro_rate)}</b><span>Squawk</span><b>${fmt(ac.squawk)}</b><span>Last message</span><b>${fmt(ac.seen,' sec')}</b><span>Last position</span><b>${fmt(ac.seen_pos,' sec')}</b></div>`}
 function aircraftIconSize(zoom){return zoom<6?24:36}
-function icon(track,flags){const size=aircraftIconSize(map.getZoom());const d=Number.isFinite(Number(track))?Number(track):0,visual=d,classes=['plane'];if(flags.military)classes.push('military');if(flags.closest)classes.push('closest');if(flags.origin)classes.push('origin');if(flags.destination)classes.push('destination');const planeSvg='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5 14.2 9l6.8 4v2l-6.8-1.8-.7 5.2 2.5 1.8v1.5L12 20.5 8 21.7v-1.5l2.5-1.8-.7-5.2L3 15v-2l6.8-4L12 1.5Z"/></svg>';return L.divIcon({className:'',html:`<div class="${classes.join(' ')}" style="--plane-size:${size}px;transform:rotate(${visual}deg);--counter-rotation:${-visual}deg${flags.motionColor?';color:'+flags.motionColor:''}">${planeSvg}</div>`,iconSize:[size,size],iconAnchor:[size/2,size/2]})}
+function icon(track,flags){const size=aircraftIconSize(map.getZoom());const d=Number.isFinite(Number(track))?Number(track):0,visual=d,classes=['plane'];if(flags.military)classes.push('military');if(flags.closest)classes.push('closest');if(flags.homePass)classes.push('home-pass');if(flags.overhead)classes.push('overhead');if(flags.origin)classes.push('origin');if(flags.destination)classes.push('destination');const planeSvg='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5 14.2 9l6.8 4v2l-6.8-1.8-.7 5.2 2.5 1.8v1.5L12 20.5 8 21.7v-1.5l2.5-1.8-.7-5.2L3 15v-2l6.8-4L12 1.5Z"/></svg>';return L.divIcon({className:'',html:`<div class="${classes.join(' ')}" style="--plane-size:${size}px;transform:rotate(${visual}deg);--counter-rotation:${-visual}deg${flags.motionColor?';color:'+flags.motionColor:''}">${planeSvg}</div>`,iconSize:[size,size],iconAnchor:[size/2,size/2]})}
 for(const el of document.querySelectorAll('.motion-filter'))el.addEventListener('change',()=>{
   if(el.checked){for(const other of document.querySelectorAll('.motion-filter'))if((el.value==='all'&&other!==el)||(el.value!=='all'&&other.value==='all'))other.checked=false}
   applyMotionView();
 });
 document.getElementById('motion-colors').addEventListener('change',applyMotionView);
+document.getElementById('home-pass-highlight').addEventListener('change',applyMotionView);
+document.getElementById('overhead-highlight').addEventListener('change',applyMotionView);
 function stabilizeMap(){requestAnimationFrame(()=>requestAnimationFrame(()=>{map.invalidateSize({animate:false,pan:false});if(coverageLine)coverageLine.redraw();if(trackLine)trackLine.redraw()}))}function fitAircraft(){if(lastBounds&&lastBounds.isValid()){map.invalidateSize({animate:false,pan:false});map.fitBounds(lastBounds.pad(.08),{maxZoom:10,animate:false});stabilizeMap()}}document.getElementById('fit').addEventListener('click',fitAircraft);const mapContainer=document.getElementById('map');if(window.ResizeObserver)new ResizeObserver(()=>stabilizeMap()).observe(mapContainer);document.addEventListener('visibilitychange',()=>{if(!document.hidden)stabilizeMap()});window.addEventListener('pageshow',stabilizeMap);window.addEventListener('focus',stabilizeMap);map.on('zoomend',()=>{const size=aircraftIconSize(map.getZoom());for(const marker of markers.values()){const el=marker.getElement();if(el){el.style.width=size+'px';el.style.height=size+'px';el.style.marginLeft=(-size/2)+'px';el.style.marginTop=(-size/2)+'px';el.querySelector('.plane')?.style.setProperty('--plane-size',size+'px')}}});map.on('zoomend moveend',()=>{if(coverageLine)coverageLine.redraw();if(trackLine)trackLine.redraw()});
 function trackerLabel(){if(enrichmentSource==='none')return 'Disabled';const state=enrichment.tracker_state||(enrichment.available?'active':'awaiting');return state==='active'?'Detected / active':(state==='unavailable'?'Temporarily unavailable':'Awaiting detection')}
 function renderInfo(s){if(!s){infoEl.innerHTML='<span>Status</span><span class="bad">Unavailable</span>';return}const cls=s.feed_status==='ok'?'ok':(s.feed_status==='degraded'?'degraded':'bad');const rows=[['Build',esc(s.build_version)],['Feed',`<b class="${cls}">${esc(String(s.feed_status||'unknown').toUpperCase())}</b>`],['Source',esc(s.source)],['Receiver',esc(s.receiver)],['Messages',s.messages_received!=null?Number(s.messages_received).toLocaleString():'—'],['Message rate',s.message_rate_per_second!=null?`${esc(s.message_rate_per_second)} / sec`:'—'],['Aircraft',esc(s.aircraft_total)],['With position',esc(s.aircraft_with_position)],['Without position',esc(s.aircraft_without_position)],['Max range',maxObservedRange!=null?`${maxObservedRange.toFixed(1)} NM`:'—'],['Parse errors',s.parse_errors!=null?esc(s.parse_errors):'—'],['Reconnects',s.reconnections!=null?esc(s.reconnections):'—'],['Tracker',trackerLabel()],['O/D airport',destinationAirport||'—'],['Uptime',duration(s.uptime_seconds)]];infoEl.innerHTML=rows.map(([k,v])=>`<span>${esc(k)}</span><span>${v}</span>`).join('')}
 function homeIcon(){const svg='<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 15.5 16 4l13 11.5-2.7 3L16 9.4 5.7 18.5Z" fill="#e35b4f" stroke="#fff" stroke-width="1.2"/><path d="M7.5 16.8 16 9.5l8.5 7.3V28h-6v-7h-5v7h-6Z" fill="#f2d6a2" stroke="#555" stroke-width="1"/></svg>';return L.divIcon({className:'',html:`<div class="home-marker">${svg}</div>`,iconSize:[28,28],iconAnchor:[14,24]})}
-async function refreshHome(){try{const r=await fetch('map-config',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),h=c?.home;inputSource=c?.source||null;setMapTheme(c?.map_theme);verboseMotion=c?.verbose_logging===true;coverageOutlineEnabled=c?.coverage_outline_enabled===true;document.getElementById('range-control').style.display=coverageOutlineEnabled?'':'none';rangeToggle.disabled=!coverageOutlineEnabled;document.getElementById('envelope-control').hidden=!coverageOutlineEnabled;if(!coverageOutlineEnabled)envelopeLayers.clearLayers();if(c?.title){document.title=c.title;document.querySelector('.topbar strong').textContent=c.title}if(!coverageOutlineEnabled&&coverageLine){map.removeLayer(coverageLine);coverageLine=null;maxObservedRange=null;}destinationAirport=c?.destination_airport||null;enrichmentSource=c?.enrichment_source||'adsb_tracker';trackHistoryAvailable=!!c?.track_history_available;document.getElementById('trackhex').dataset.query=c?.track_history_query||'hex';document.getElementById('trackhex').placeholder=c?.track_history_query==='callsign'?'Flight callsign':'ICAO hex';document.getElementById('trackhex').maxLength=c?.track_history_query==='callsign'?16:6;trackBox.style.display=trackHistoryAvailable?'block':'none';if(!h)return;const lat=Number(h.latitude),lon=Number(h.longitude),radius=Number(h.radius||0);if(!Number.isFinite(lat)||!Number.isFinite(lon))return;homeLatLng={lat,lon};if(!homeMarker)homeMarker=L.marker([lat,lon],{icon:homeIcon(),zIndexOffset:1000}).addTo(map).bindPopup('<b>Home</b>');else homeMarker.setLatLng([lat,lon]);if(radius>0){if(!homeCircle)homeCircle=L.circle([lat,lon],{radius,weight:1,fillOpacity:.05}).addTo(map);else{homeCircle.setLatLng([lat,lon]);homeCircle.setRadius(radius)}}}catch(err){console.warn('Home marker unavailable',err)}}
+async function refreshHome(){try{const r=await fetch('map-config',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),h=c?.home;inputSource=c?.source||null;setMapTheme(c?.map_theme);document.getElementById('recording-control').hidden=c?.development_recording!==true;verboseMotion=c?.verbose_logging===true;coverageOutlineEnabled=c?.coverage_outline_enabled===true;document.getElementById('range-control').style.display=coverageOutlineEnabled?'':'none';rangeToggle.disabled=!coverageOutlineEnabled;document.getElementById('envelope-control').hidden=!coverageOutlineEnabled;if(!coverageOutlineEnabled)envelopeLayers.clearLayers();if(c?.title){document.title=c.title;document.querySelector('.topbar strong').textContent=c.title}if(!coverageOutlineEnabled&&coverageLine){map.removeLayer(coverageLine);coverageLine=null;maxObservedRange=null;}destinationAirport=c?.destination_airport||null;enrichmentSource=c?.enrichment_source||'adsb_tracker';trackHistoryAvailable=!!c?.track_history_available;document.getElementById('trackhex').dataset.query=c?.track_history_query||'hex';document.getElementById('trackhex').placeholder=c?.track_history_query==='callsign'?'Flight callsign':'ICAO hex';document.getElementById('trackhex').maxLength=c?.track_history_query==='callsign'?16:6;trackBox.style.display=trackHistoryAvailable?'block':'none';if(!h)return;const lat=Number(h.latitude),lon=Number(h.longitude),radius=Number(h.radius||0);if(!Number.isFinite(lat)||!Number.isFinite(lon))return;homeLatLng={lat,lon};if(!homeMarker)homeMarker=L.marker([lat,lon],{icon:homeIcon(),zIndexOffset:1000}).addTo(map).bindPopup('<b>Home</b>');else homeMarker.setLatLng([lat,lon]);if(radius>0){if(!homeCircle)homeCircle=L.circle([lat,lon],{radius,weight:1,fillOpacity:.05}).addTo(map);else{homeCircle.setLatLng([lat,lon]);homeCircle.setRadius(radius)}}}catch(err){console.warn('Home marker unavailable',err)}}
 async function refreshEnrichment(){try{const r=await fetch('tracker-enrichment',{cache:'no-store'});if(r.ok)enrichment=await r.json()}catch(err){enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}}}}
 function destinationPoint(origin,bearingDeg,distanceNm){const R=3440.065,d=distanceNm/R,t=bearingDeg*Math.PI/180,p1=origin.lat*Math.PI/180,l1=origin.lon*Math.PI/180;const p2=Math.asin(Math.sin(p1)*Math.cos(d)+Math.cos(p1)*Math.sin(d)*Math.cos(t));const l2=l1+Math.atan2(Math.sin(t)*Math.sin(d)*Math.cos(p1),Math.cos(d)-Math.sin(p1)*Math.sin(p2));return[p2*180/Math.PI,((l2*180/Math.PI+540)%360)-180]}
 
@@ -1763,6 +1866,20 @@ document.getElementById('density-force').addEventListener('click',()=>refreshDen
 
 async function refreshCoverage(){if(!coverageOutlineEnabled||!rangeToggle.checked)return;try{const r=await fetch('range-coverage',{cache:'no-store'});if(!r.ok)return;const c=await r.json(),bins=Array.isArray(c.bins)?c.bins:[];const ranges=bins.map(x=>Number(x.distance_nm)).filter(Number.isFinite);maxObservedRange=ranges.length?Math.max(...ranges):null;const segs=(Array.isArray(c.envelope_segments)?c.envelope_segments:[]).map(run=>run.map(p=>[p[1],p[0]]));if(!rangeToggle.checked)return;if(segs.length){if(!coverageLine)coverageLine=L.polyline(segs,{color:'#ff1c1c',weight:2,opacity:.85,interactive:false,noClip:true}).addTo(map);else coverageLine.setLatLngs(segs);coverageLine.redraw()}else if(coverageLine){map.removeLayer(coverageLine);coverageLine=null}}catch(err){console.warn('Coverage outline unavailable',err)}}
 function clearTrack(){if(trackLine){map.removeLayer(trackLine);trackLine=null}trackStatus.textContent=''}
+const selectedDestination=L.layerGroup().addTo(map);
+function updateSelectedDestination(){
+  selectedDestination.clearLayers();
+  for(const [key,marker] of markers){
+    if(key!==selectedAnalysisKey||!marker.bridgeAircraft)continue;
+    const ac=marker.bridgeAircraft,t=trackerFor(key);
+    const code=String(ac.route_destination||ac.destination||t.route_destination||'').trim().toUpperCase();
+    const airport=destinationAirports.get(code);
+    if(!airport)continue;
+    const dest=[airport.lat,airport.lon],from=marker.getLatLng();
+    L.polyline([from,dest],{color:'#e6a23c',weight:2,dashArray:'7 7',interactive:false}).addTo(selectedDestination);
+    L.marker(dest,{interactive:false,icon:L.divIcon({className:'destination-cross',html:'<b style="color:#e6a23c;font-size:26px;text-shadow:0 0 3px #111">×</b>',iconSize:[22,28],iconAnchor:[11,14]})}).bindTooltip(esc(code)+' · reported destination',{permanent:true,direction:'top'}).addTo(selectedDestination);
+  }
+}
 let selectedAnalysisKey=null,analysisTrail=null,analysisEvidence=null,analysisBusy=false,analysisSelection=0;
 let proximityBusy=false;
 function proximityHtml(data){
@@ -1829,9 +1946,32 @@ async function densityViewResponse(query,signal){
   return {ok:true,json:async()=>JSON.parse(node.textContent)};
 }
 async function mapViewResponse(){const response=await fetch('./',{cache:'no-store'});if(!response.ok)return response;const html=new DOMParser().parseFromString(await response.text(),'text/html'),node=html.getElementById('faa-map-state');if(!node)throw new Error('FAA local view unavailable');const aircraft=JSON.parse(node.textContent),motionNode=html.getElementById('faa-motion-state');if(motionNode){const data=JSON.parse(motionNode.textContent);motionStates=data.aircraft||{};for(const state of Object.values(motionStates))state.fetched_at=Date.now()/1000;motionFreshSeconds=data.fresh_seconds||45}return {ok:true,json:async()=>aircraft}}
+function recordingSize(value){return Number.isFinite(value)?(value/1048576).toFixed(1)+' MiB':'unavailable'}
+async function refreshRecording(){
+  try{
+    const response=await fetch('recording',{cache:'no-store'}),data=await response.json();if(!response.ok)throw Error(data.error||'Recording unavailable');
+    document.getElementById('recording-summary').textContent=data.enabled?'recording':data.retained_snapshots?'saved':'off';
+    document.getElementById('recording-start').disabled=data.enabled;
+    document.getElementById('recording-stop').disabled=!data.enabled;
+    for(const id of ['recording-export','recording-replay'])document.getElementById(id).disabled=!data.retained_snapshots;
+    const oldest=data.oldest_received_at?new Date(data.oldest_received_at*1000).toLocaleString():'—',newest=data.newest_received_at?new Date(data.newest_received_at*1000).toLocaleString():'—';
+    document.getElementById('recording-status').textContent=`${data.retained_snapshots} snapshots · ${data.retained_samples} positioned samples · ${recordingSize(data.recording_bytes)} / ${recordingSize(data.limit_bytes)} · dropped ${data.snapshots_dropped} · errors ${data.write_errors} · ${oldest} → ${newest}`+(data.enabled?' · ends '+new Date(data.ends_at*1000).toLocaleString():'')+(data.last_error?' · '+data.last_error:'');
+    document.getElementById('recording-resources').textContent=`Process RAM: ${recordingSize(data.process_rss_bytes)} · estimated one-hour history RAM: ${recordingSize(data.history?.estimated_memory_bytes)} · ${data.history?.retained_samples||0} retained samples · queued ${recordingSize(data.queue_bytes)}`;
+  }catch(error){document.getElementById('recording-status').textContent=error.message}
+}
+async function recordingAction(action){
+  document.getElementById('recording-status').textContent='Updating recording…';
+  try{const response=await fetch('recording/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),data=await response.json();if(!response.ok)throw Error(data.error||'Recording action failed');await refreshRecording()}catch(error){document.getElementById('recording-status').textContent=error.message}
+}
+document.getElementById('recording-start').addEventListener('click',()=>recordingAction('start'));
+document.getElementById('recording-stop').addEventListener('click',()=>recordingAction('stop'));
+document.getElementById('recording-export').addEventListener('click',()=>{window.location.href='recording/export?download=1&format=geojson'});
+document.getElementById('recording-replay').addEventListener('click',()=>{window.location.href='recording/export?download=1&format=jsonl'});
+document.getElementById('recording-control').addEventListener('toggle',()=>{if(!document.getElementById('recording-control').hidden&&document.getElementById('recording-control').open)refreshRecording()});
+setInterval(()=>{if(!document.getElementById('recording-control').hidden&&document.getElementById('recording-control').open)refreshRecording()},10000);
 let loadedSource=null;
 function sourceChanged(status){const source=status?.source;if(!source)return false;const faa=['swim_tfms','swim_sfdps'].includes(source);if(faa!==faaLocalView)return true;if(loadedSource&&loadedSource!==source)return true;loadedSource=source;return false}
-async function refresh(){try{const [ar,sr,er]=await Promise.all([faaLocalView?mapViewResponse():fetch('data/aircraft.json?client_id=bridge-map',{cache:'no-store'}),fetch('status',{cache:'no-store'}),fetch('tracker-enrichment',{cache:'no-store'})]);if(er.ok)enrichment=await er.json();else enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};const status=sr.ok?await sr.json():null;if(sourceChanged(status)){window.location.reload();return}if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),active=new Set(),points=[];if(status?.source)inputSource=status.source;await refreshDestinationAirports(data.aircraft||[]);refreshMotionStates();for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);const flags=flagsFor(key,ac),orientation=displayTrack(key,ac,lat,lon);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(orientation.degrees,flags)}).addTo(map);m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false});markers.set(key,m);m.on('click',()=>{selectedAnalysisKey=key;analysisSelection++;document.getElementById('proximity-selected').textContent=(ac.flight||key).trim();document.getElementById('proximity-results').textContent='Updating selection…';refreshAnalysisTrail();refreshProximity()})}else{m.setLatLng([lat,lon]);m.setIcon(icon(orientation.degrees,flags));if(m.getPopup())updateAircraftPopup(m,popup(ac,flags,key,orientation));else m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false})}m.bridgeVisual={degrees:orientation.degrees,flags};}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}applyMotionView();if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refreshCoverage();setInterval(refreshCoverage,5000);refresh();setInterval(refresh,faaLocalView?5000:1000)})();
+async function refresh(){try{const [ar,sr,er]=await Promise.all([faaLocalView?mapViewResponse():fetch('data/aircraft.json?client_id=bridge-map',{cache:'no-store'}),fetch('status',{cache:'no-store'}),fetch('tracker-enrichment',{cache:'no-store'})]);if(er.ok)enrichment=await er.json();else enrichment={available:false,tracker_state:'awaiting',closest_hex:null,military_hexes:[],origin_hexes:[],destination_hexes:[],aircraft:{}};const status=sr.ok?await sr.json():null;if(sourceChanged(status)){window.location.reload();return}if(!ar.ok)throw new Error(`aircraft.json HTTP ${ar.status}`);const data=await ar.json(),active=new Set(),points=[];if(status?.source)inputSource=status.source;await refreshDestinationAirports(data.aircraft||[]);refreshMotionStates();for(const ac of(data.aircraft||[])){const lat=Number(ac.lat),lon=Number(ac.lon);if(!Number.isFinite(lat)||!Number.isFinite(lon))continue;const key=String(ac.hex||'').toLowerCase();if(!key)continue;active.add(key);points.push([lat,lon]);const flags=flagsFor(key,ac),orientation=displayTrack(key,ac,lat,lon);let m=markers.get(key);if(!m){m=L.marker([lat,lon],{icon:icon(orientation.degrees,flags)}).addTo(map);m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false});markers.set(key,m);m.on('click',()=>{selectedAnalysisKey=key;analysisSelection++;updateSelectedDestination();document.getElementById('proximity-selected').textContent=(ac.flight||key).trim();document.getElementById('proximity-results').textContent='Updating selection…';refreshAnalysisTrail();refreshProximity()})}else{m.setLatLng([lat,lon]);m.setIcon(icon(orientation.degrees,flags));if(m.getPopup())updateAircraftPopup(m,popup(ac,flags,key,orientation));else m.bindPopup(popup(ac,flags,key,orientation),{autoPan:false})}m.bridgeAircraft=ac;m.bridgeVisual={degrees:orientation.degrees,flags};}for(const [key,m]of markers)if(!active.has(key)){map.removeLayer(m);markers.delete(key)}updateSelectedDestination();applyMotionView();if(!initialFit&&points.length){fitAircraft();initialFit=true}const total=status?.aircraft_total??(data.aircraft||[]).length,rate=status?.message_rate_per_second,feed=status?.feed_status||'unknown';statsEl.innerHTML=`<span class="${feed==='ok'?'ok':(feed==='degraded'?'degraded':'bad')}">${esc(feed.toUpperCase())}</span> · ${points.length} positioned / ${total} total${rate!=null?` · ${esc(rate)} msg/sec`:''}`;renderInfo(status)}catch(err){statsEl.innerHTML=`<span class="bad">MAP DATA ERROR</span> · ${esc(err.message)}`}}refreshHome();setInterval(refreshHome,300000);refreshCoverage();setInterval(refreshCoverage,5000);refresh();setInterval(refresh,faaLocalView?5000:1000)})();
 </script></body></html>
 '''
 
@@ -1847,6 +1987,10 @@ class Handler(BaseHTTPRequestHandler):
     def _operation(self, method):
         path, _, raw_query = self.path.partition('?')
         query = parse_qs(raw_query)
+        if method=='POST' and path in ('/recording/start','/recording/stop'):
+            return {'action':path.rsplit('/',1)[1],'dataset':'history-recording','source':CFG['source']}
+        if method=='GET' and path=='/recording/export':
+            return {'action':'export','dataset':'history-recording','source':CFG['source']}
         datasets = {'/traffic-density/import': 'traffic-density', '/range-coverage/import': 'range-coverage',
                     '/data/clear': 'collected-data', '/traffic-density/export': 'traffic-density',
                     '/traffic-density.geojson': 'traffic-density', '/aircraft-history':'aircraft-history', '/range-coverage': 'range-coverage',
@@ -1975,6 +2119,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _do_POST(self):
+        recording_path=self.path.partition('?')[0]
+        if recording_path in ('/recording/start','/recording/stop'):
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if self.headers.get('Content-Type','').split(';')[0].strip()!='application/json' or not 0<length<=1024:
+                    raise ValueError('Recording actions require a small application/json body')
+                request=json.loads(self.rfile.read(length))
+                if not isinstance(request,dict):raise ValueError('Recording request must be an object')
+                result=get_recorder().start() if recording_path.endswith('/start') else get_recorder().stop()
+                self.send_json(result)
+            except (ValueError,TypeError) as exc:self.send_json({'error':str(exc)},400)
+            except Exception as exc:
+                print(f'[WARN] Recording action failed: {type(exc).__name__}: {exc}',flush=True)
+                self.send_json({'error':'Recording action failed; inspect app logs'},503)
+            return
         path, _, _query_string = self.path.partition("?")
         if path.startswith("/settings/"):
             settings_post(self, path)
@@ -2065,6 +2224,25 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             requests_served += 1
         path, _, query_string = self.path.partition("?")
+        if path == '/recording':
+            try:self.send_json({**get_recorder().status(),'history':track_history.resource_status(),**process_memory()})
+            except Exception as exc:self.send_json({'error':'Recording status unavailable: '+type(exc).__name__},503)
+            return
+        if path == '/recording/export':
+            query=parse_qs(query_string);temporary=None
+            try:
+                if query.get('download')!=['1']:raise ValueError('Explicit download=1 required')
+                format=query.get('format',['geojson'])[0]
+                temporary=get_recorder().export(format)
+                self.send_file(temporary,'aircraft-recording-'+CFG['source']+'-'+datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')+'.'+format+'.gz','application/gzip')
+            except ValueError as exc:self.send_json({'error':str(exc)},400)
+            except (BrokenPipeError,ConnectionResetError):raise
+            except Exception as exc:
+                print(f'[WARN] Recording export failed: {type(exc).__name__}: {exc}',flush=True)
+                self.send_json({'error':'Recording export failed; inspect app logs'},503)
+            finally:
+                if temporary:temporary.unlink(missing_ok=True)
+            return
         if path == "/aircraft-proximity":
             query=parse_qs(query_string);key=query.get('track_id',[''])[0].strip().lower()
             if not re.fullmatch(r'[a-z0-9~_-]{1,64}',key):
@@ -2078,6 +2256,10 @@ class Handler(BaseHTTPRequestHandler):
                 if keys or not re.fullmatch(r'[0-9a-f]{6}',hex_code):
                     self.send_json({'error':'Use a six-digit hex or a track_id selector'},400);return
                 keys=track_history.resolve_hex(hex_code)
+                if local_history is not None and local_history_source==CFG['source']:
+                    for k,r in local_history.snapshot(time.time()).items():
+                        if k==hex_code or str(r['identity'].get('icao_address','')).lower()==hex_code:
+                            if k not in keys:keys.append(k)
                 if not keys:
                     self.send_json({'error':'No retained history for this hex'},404);return
             if len(keys)>32 or any(not re.fullmatch(r'[a-z0-9~_-]{1,64}',k) for k in keys):
@@ -2085,6 +2267,19 @@ class Handler(BaseHTTPRequestHandler):
             if not keys and query.get('download')!=['1']:
                 self.send_json({'error':'Select a track, or explicitly download retained history'},400);return
             payload=track_history.snapshot(keys or None)
+            if local_history is not None and local_history_source==CFG['source']:
+                retained=local_history.snapshot(time.time(),keys or None)
+                for key,record in retained.items():
+                    current=payload['tracks'].get(key)
+                    if current:
+                        merged={p['t']:p for p in record['samples']}
+                        merged.update({p['t']:p for p in current['samples']})
+                        record['samples']=[merged[t] for t in sorted(merged)]
+                        record['identity'].update(current['identity'])
+                    payload['tracks'][key]=record
+                payload['retention_policy']={'default_seconds':3600,'local_route_seconds':86400,'qualification':'both reported airports covered; observed within 10 NM of an endpoint'}
+                payload['history_seconds']=86400
+                payload['transient']=False
             payload['build_version']=BUILD_VERSION
             payload['motion']=get_motion_engine().snapshot(keys or None,include_events=True)
             download=query.get('download')==['1']
@@ -2268,7 +2463,7 @@ class Handler(BaseHTTPRequestHandler):
             if keys is not None and (len(keys) > 256 or any(not re.fullmatch(r'[a-z0-9~_-]{1,64}', key) for key in keys)):
                 self.send_json({'error': 'Supply at most 256 valid aircraft identifiers'}, 400)
                 return
-            self.send_json(get_motion_engine().snapshot(keys, include_events=query.get('events', ['0'])[0]=='1'))
+            self.send_json(map_motion_snapshot(keys, include_events=query.get('events', ['0'])[0]=='1'))
             return
         if path == "/status":
             self.send_json(snapshot_status())
@@ -2302,7 +2497,7 @@ class Handler(BaseHTTPRequestHandler):
                 page = page.replace('id="envelope-control" class="analysis-controls"', 'id="envelope-control" class="analysis-controls" hidden')
                 page = page.replace('id="range-control" style="font-size:12px"', 'id="range-control" style="display:none;font-size:12px"')
             if CFG["source"] == "swim_sfdps":
-                display = json.dumps(get_motion_engine().snapshot()).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
+                display = json.dumps(map_motion_snapshot()).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
                 page = page.replace('<head>', '<head><script id="faa-motion-state" type="application/json">'+display+'</script>', 1)
             page = page.replace("<head>", "<head>" + CARD_NAV_SCRIPT, 1)
             self.send_html(page)

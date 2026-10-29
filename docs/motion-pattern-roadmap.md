@@ -1,3 +1,16 @@
+# Motion roadmap after v0.7.3
+
+v0.7.3 closes the usability, history and reliability increment. Next work focuses on observed geometry and composable sequences, without inferring intent.
+
+1. Refine existing orbit, reversal and racetrack detection using replay cases, including large patterns, partial observations and exits.
+2. Add repeated parallel passes, grid/lawnmower geometry and figure-eights with evidence and counterexamples.
+3. Compose primitives and derived geometry into contextual sequences; support partial sequences near airports without assuming takeoff, landing or purpose.
+4. Evaluate coordinated multi-aircraft geometry, explicit route baselines and robust flight-occurrence handling.
+
+Live exports verified extended route retention and rolling 24-hour expiration. Full-day detector replay remains unfinished. Earlier planning follows as historical context; version assignments below are superseded.
+
+> Status as of 28 October 2026: range/density, source adapters, motion primitives, orbit/reversal/racetrack geometry, destination movement, selected-aircraft proximity/CPA, trails and GeoJSON export are implemented. v0.7.3 adds selected destination overlays, experimental local-route disk retention, grouped configuration and projected passes near Home. Live validation of the newest features remains open. Remaining geometric work includes repeated parallel passes/grid patterns, figure-eights, coordinated multi-aircraft geometry, Home-relative radial classifications, explicit-baseline route deviation, broader sequence recognition, altitude-colored trails and robust flight-occurrence handling. Interpretive purpose/intent labels are deferred; observed kinematics is the goal. The full-day replay is incomplete.
+
 > Current dev.2 additions: selected trails, sampled analytical history/export across sources, offline motion replay, geometry diagnostics, trusted-network access and observed-descent arrival scenarios. [Exact behavior and validation](v0.7.2-dev.2-testing.md). Earlier no-FAA-history/export statements below describe the prior build; dev.2 permits deliberate analytical history downloads while automatic FAA feed bridging remains disabled.
 
 # v0.7.x — Motion & Pattern Analysis Roadmap

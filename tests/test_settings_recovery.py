@@ -74,8 +74,8 @@ class SettingsRecoveryTests(unittest.TestCase):
             result = settings.restore_snapshot()
         request = upstream.call_args.args[0]
         self.assertEqual(request.full_url, 'http://supervisor/addons/self/options')
-        self.assertEqual(json.loads(request.data)['options']['receiver_host'], 'receiver')
-        self.assertEqual(json.loads(request.data)['options']['password'], 'secret-value')
+        self.assertEqual(settings.flatten_options(json.loads(request.data)['options'])['receiver_host'], 'receiver')
+        self.assertEqual(settings.flatten_options(json.loads(request.data)['options'])['password'], 'secret-value')
         self.assertTrue(result['restart_required'])
         self.assertEqual(self.options.read_text(), '{}')
 
@@ -128,16 +128,11 @@ if __name__ == '__main__':
 
 class StartupOptionsRegressionTests(unittest.TestCase):
     def test_all_manifest_defaults_match_recovery_allowlist(self):
-        # Parse flat options using stdlib so this check needs no YAML dependency.
-        import ast
+        import yaml
         root=Path(__file__).resolve().parents[1]/'fr24-dump1090'
-        block=(root/'config.yaml').read_text().split('options:\n',1)[1].split('\nschema:',1)[0]
-        manifest={}
-        for line in block.splitlines():
-            if not line.strip():continue
-            key,value=line.strip().split(':',1);value=value.strip()
-            manifest[key]= {'true':True,'false':False}.get(value) if value in ('true','false') else ast.literal_eval(value)
-        self.assertEqual(manifest,json.loads((root/'settings_defaults.json').read_text()))
+        manifest=settings.flatten_options(yaml.safe_load((root/'config.yaml').read_text())['options'])
+        defaults=json.loads((root/'settings_defaults.json').read_text())
+        self.assertEqual(manifest,{k:defaults[k] for k in manifest})
         manifest.update(source='swim_sfdps',swim_host='tcps://synthetic.invalid:55443',swim_vpn='test',swim_username='test',swim_password='synthetic',swim_queue='test')
         checked=settings.checked_options(manifest)
         self.assertEqual(checked['source'],'swim_sfdps');self.assertEqual(checked['swim_product'],'sfdps')

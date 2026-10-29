@@ -1,12 +1,11 @@
-name: "FR24 dump1090 Bridge"
-version: "0.7.2"
-slug: "fr24_dump1090"
-description: >-
-  Normalizes a selected local aircraft data source into
-  dump1090/readsb-compatible aircraft.json endpoints.
-url: "https://github.com/brian-r-ohern/fr24-dump1090-bridge"
+name: FR24 dump1090 Bridge
+version: 0.7.3
+slug: fr24_dump1090
+description: Normalizes a selected local aircraft data source into dump1090/readsb-compatible aircraft.json
+  endpoints.
+url: https://github.com/brian-r-ohern/fr24-dump1090-bridge
 arch:
-  - amd64
+- amd64
 startup: services
 boot: auto
 init: false
@@ -15,79 +14,107 @@ ingress_port: 8085
 homeassistant_api: true
 hassio_api: true
 panel_icon: mdi:airplane
-panel_title: "Aircraft Bridge"
+panel_title: Aircraft Bridge
 apparmor: true
 map:
-  - "addon_config:rw"
-  - type: homeassistant_config
-    read_only: false
-    path: /homeassistant
+- addon_config:rw
+- type: homeassistant_config
+  read_only: false
+  path: /homeassistant
 ports:
   8085/tcp: null
 ports_description:
-  8085/tcp: "FR24 dump1090 bridge HTTP service (optional LAN exposure)"
+  8085/tcp: FR24 dump1090 bridge HTTP service (optional LAN exposure)
 options:
-  map_theme: "auto"
-  trusted_networks: "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7"
-  verbose_logging: false
-  dashboard_integration: false
-  source: "sbs_30003"
-  receiver_host: ""
-  username: ""
-  password: ""
-  aircraft_json_url: ""
-  swim_host: ""
-  swim_vpn: ""
-  swim_username: ""
-  swim_password: ""
-  swim_queue: ""
-  history_url: ""
-  destination_airport: ""
-  density_legacy_source: "unassigned"
-  receiver_port: 80
-  sbs_port: 30003
-  poll_interval: 2
-  request_timeout: 3
-  aircraft_json_poll_interval: 1
-  enrichment_source: "adsb_tracker"
-  tracker_aircraft_entity: "sensor.adsb_all_aircraft"
-  tracker_closest_entity: "sensor.adsb_closest_aircraft"
-  tracker_military_entity: "sensor.adsb_military_aircraft_details"
-  swim_product: "tfms"
-  swim_radius_nm: 250
-  swim_aircraft_timeout: 120
-  swim_retry_count: 3
-  swim_retry_interval_ms: 3000
-
+  source: sbs_30003
+  receiver_host: ''
+  destination_airport: ''
+  personalization:
+    map_theme: auto
+    dashboard_integration: false
+  integrations:
+    enrichment_source: adsb_tracker
+  additional_feeds: {}
+  faa_swim: {}
+  advanced:
+    history_url: ''
+    development_recording: false
+    verbose_logging: false
+    trusted_networks: 127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7
+    sbs_port: 30003
+    poll_interval: 2
+    request_timeout: 3
+    aircraft_json_poll_interval: 1
+    tracker_aircraft_entity: sensor.adsb_all_aircraft
+    tracker_closest_entity: sensor.adsb_closest_aircraft
+    tracker_military_entity: sensor.adsb_military_aircraft_details
+    swim_aircraft_timeout: 120
+    swim_retry_count: 3
+    swim_retry_interval_ms: 3000
+    density_legacy_source: unassigned
 schema:
-  map_theme: "list(auto|light|dark)?"
-  trusted_networks: str?
-  verbose_logging: bool?
-  dashboard_integration: bool?
-  source: "list(sbs_30003|flights_js|aircraft_json|swim_tfms|swim_sfdps)"
-  density_legacy_source: "list(unassigned|sbs_30003|flights_js|aircraft_json|swim_tfms)?"
+  source: list(sbs_30003|flights_js|aircraft_json|swim_tfms|swim_sfdps)
   receiver_host: str?
-  sbs_port: port?
-  receiver_port: port?
-  username: str?
-  password: password?
-  poll_interval: "int(1,60)?"
-  request_timeout: "int(1,30)?"
-  aircraft_json_url: str?
-  aircraft_json_poll_interval: "int(1,60)?"
-  enrichment_source: "list(adsb_tracker|none)"
-  tracker_aircraft_entity: str?
-  tracker_closest_entity: str?
-  tracker_military_entity: str?
-  swim_product: "list(tfms|sfdps)?"
-  swim_host: str?
-  swim_vpn: str?
-  swim_username: str?
-  swim_password: password?
-  swim_queue: str?
-  swim_radius_nm: "int(25,1000)?"
-  swim_aircraft_timeout: "int(30,900)?"
-  swim_retry_count: "int(0,20)?"
-  swim_retry_interval_ms: "int(500,60000)?"
-  history_url: str?
   destination_airport: str?
+  personalization:
+    map_theme: list(auto|light|dark)?
+    dashboard_integration: bool?
+  integrations:
+    enrichment_source: list(adsb_tracker|none)
+  additional_feeds:
+    aircraft_json_url: str?
+    username: str?
+    password: password?
+    receiver_port: port?
+  faa_swim:
+    swim_host: str?
+    swim_vpn: str?
+    swim_username: str?
+    swim_password: password?
+    swim_queue: str?
+    swim_radius_nm: int(25,1000)?
+  advanced:
+    history_url: str?
+    development_recording: bool?
+    verbose_logging: bool?
+    trusted_networks: str?
+    sbs_port: port?
+    poll_interval: int(1,60)?
+    request_timeout: int(1,30)?
+    aircraft_json_poll_interval: int(1,60)?
+    tracker_aircraft_entity: str?
+    tracker_closest_entity: str?
+    tracker_military_entity: str?
+    swim_aircraft_timeout: int(30,900)?
+    swim_retry_count: int(0,20)?
+    swim_retry_interval_ms: int(500,60000)?
+    density_legacy_source: list(unassigned|sbs_30003|flights_js|aircraft_json|swim_tfms)?
+  verbose_logging: bool?
+  request_timeout: int(1,30)?
+  swim_username: str?
+  poll_interval: int(1,60)?
+  swim_host: str?
+  map_theme: list(auto|light|dark)?
+  dashboard_integration: bool?
+  receiver_port: port?
+  density_legacy_source: list(unassigned|sbs_30003|flights_js|aircraft_json|swim_tfms)?
+  aircraft_json_url: str?
+  password: password?
+  swim_password: password?
+  sbs_port: port?
+  username: str?
+  swim_radius_nm: int(25,1000)?
+  swim_retry_interval_ms: int(500,60000)?
+  tracker_aircraft_entity: str?
+  swim_aircraft_timeout: int(30,900)?
+  swim_retry_count: int(0,20)?
+  enrichment_source: list(adsb_tracker|none)?
+  swim_vpn: str?
+  history_url: str?
+  trusted_networks: str?
+  swim_queue: str?
+  development_recording: bool?
+  tracker_military_entity: str?
+  tracker_closest_entity: str?
+  aircraft_json_poll_interval: int(1,60)?
+  swim_product: list(tfms|sfdps)?

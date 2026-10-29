@@ -1,4 +1,5 @@
 """Shared feed configuration validation, also used before recovery startup."""
+from option_layout import flatten_options
 from urllib.parse import urlsplit
 import re
 import ipaddress
@@ -7,6 +8,7 @@ VALID_SOURCES = ("sbs_30003", "flights_js", "aircraft_json", "swim_tfms", "swim_
 def validate_options(cfg):
     if not isinstance(cfg, dict):
         raise ValueError("Settings must be an object")
+    cfg = flatten_options(cfg)
     source = str(cfg.get("source", "sbs_30003")).strip() or "sbs_30003"
     if source not in VALID_SOURCES:
         raise ValueError(f"Invalid source {source!r}; expected one of: {', '.join(VALID_SOURCES)}")
@@ -40,6 +42,8 @@ def validate_options(cfg):
         if not re.fullmatch(r'sensor\.[a-z0-9_]+', entity):
             raise ValueError('Invalid Tracker sensor entity: ' + key)
         tracker_entities[key] = entity
+    if type(cfg.get("development_recording", False)) is not bool:
+        raise ValueError("development_recording must be boolean")
     if type(cfg.get("verbose_logging", False)) is not bool:
         raise ValueError("verbose_logging must be boolean")
     if cfg.get("map_theme", "auto") not in ("auto", "light", "dark"):
@@ -49,6 +53,7 @@ def validate_options(cfg):
     for network in networks.split(','):ipaddress.ip_network(network.strip())
     return {
         "trusted_networks":networks,
+        "development_recording": cfg.get("development_recording", False),
         "map_theme": cfg.get("map_theme", "auto"),
         "verbose_logging": cfg.get("verbose_logging", False),
         **tracker_entities,

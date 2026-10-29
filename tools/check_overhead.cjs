@@ -1,0 +1,5 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const t=fs.readFileSync(process.argv[2],'utf8'),a=t.indexOf('function overheadNow('),b=t.indexOf('function applyMotionView(',a);
+let distance=600;const c=vm.createContext({homeLatLng:{lat:43,lon:-75},inputSource:'swim_sfdps',map:{distance:()=>distance},Number});vm.runInContext(t.slice(a,b),c);
+const m={bridgeAircraft:{seen_pos:12,alt_baro:36000},getLatLng:()=>({lat:43,lon:-75})};c.m=m;
+assert(vm.runInContext('overheadNow(m)',c));distance=618;assert(!vm.runInContext('overheadNow(m)',c));distance=600;m.bridgeAircraft.seen_pos=46;assert(!vm.runInContext('overheadNow(m)',c));m.bridgeAircraft.seen_pos=16;c.inputSource='sbs_30003';assert(!vm.runInContext('overheadNow(m)',c));m.bridgeAircraft.seen_pos=0;assert(vm.runInContext('overheadNow(m)',c));c.homeLatLng=null;assert(!vm.runInContext('overheadNow(m)',c));assert(t.includes("if(flags.overhead)classes.push('overhead')"));console.log('PASS overhead horizontal threshold, high altitude eligibility, source freshness and missing Home');

@@ -10,9 +10,10 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from option_layout import flatten_options, grouped_options, needs_migration
 from bridge_config import validate_options
 
-VERSION = '0.7.2'
+VERSION = '0.7.3'
 TOKEN = secrets.token_urlsafe(32)
 LOCK = threading.RLock()
 LIMIT = 65536
@@ -27,10 +28,11 @@ def snapshot_path():
 
 
 def read_options():
-    return json.loads(options_path().read_text(encoding='utf-8'))
+    return flatten_options(json.loads(options_path().read_text(encoding='utf-8')))
 
 
 def checked_options(options):
+    options = flatten_options(options)
     defaults = json.loads(Path(__file__).with_name('settings_defaults.json').read_text())
     if not isinstance(options, dict) or set(options) - set(defaults):
         raise ValueError('Settings contain unsupported fields')
@@ -105,7 +107,7 @@ def restore_snapshot():
         if not token:
             raise ValueError('Supervisor is unavailable; use the host snapshot to recover configuration manually')
         request = Request('http://supervisor/addons/self/options',
-                          data=json.dumps({'options': payload['options']}).encode(),
+                          data=json.dumps({'options': grouped_options(payload['options'])}).encode(),
                           headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'},
                           method='POST')
         try:
@@ -177,3 +179,31 @@ def settings_post(handler, path):
     except (ValueError, OSError, TypeError, AttributeError):
         # Do not expose credentials from malformed input or upstream errors.
         handler.send_json({'error': 'Settings operation failed. Reload the page and check the retained snapshot and Supervisor availability.'}, 400)
+
+
+def migrate_options():
+    """Rewrite Supervisor-owned options in one request; preserve secret references.
+
+    Read unrendered options from Supervisor info, never write /data/options.json.
+    Failure is nonfatal: flat runtime compatibility remains available.
+    """
+    raw=json.loads(options_path().read_text(encoding='utf-8'))
+    if not needs_migration(raw):return False
+    checked_options(raw)
+    token=os.environ.get('SUPERVISOR_TOKEN')
+    if not token:return False
+    headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'}
+    request=Request('http://supervisor/addons/self/info',headers=headers)
+    with urlopen(request,timeout=15) as response:info=json.load(response)
+    if info.get('result')!='ok' or not isinstance(info.get('data',{}).get('options'),dict):
+        raise ValueError('Supervisor options unavailable')
+    stored=info['data']['options']
+    # Validate keys without resolving secrets; the running rendered options were
+    # already validated above. A secret expression must remain an expression.
+    grouped=grouped_options(stored)
+    allowed=set(json.loads(Path(__file__).with_name('settings_defaults.json').read_text()))
+    if set(flatten_options(stored))-allowed:raise ValueError('Unsupported settings fields')
+    request=Request('http://supervisor/addons/self/options',data=json.dumps({'options':grouped}).encode(),headers=headers,method='POST')
+    with urlopen(request,timeout=15) as response:result=json.load(response)
+    if result.get('result')!='ok':raise ValueError('Supervisor rejected grouped settings')
+    return True

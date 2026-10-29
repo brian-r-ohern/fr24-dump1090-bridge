@@ -1,111 +1,222 @@
 configuration:
-  map_theme:
-    name: Map theme
-    description: >-
-      Basemap palette: auto follows the browser/device light or dark preference,
-      light always uses the light palette, and dark always uses the dark palette.
-      Default for new map pages is auto. Save and restart to change this default;
-      use the map toolbar selector for immediate changes without a restart. Aircraft,
-      density colors, and range outlines keep their existing colors.
-  verbose_logging:
-    name: Verbose diagnostic logging
-    description: >-
-      Enable bounded motion rejection summaries and detailed density query timings.
-      Save and restart the App. Logs contain aggregate counts and fixed reason
-      names, without aircraft identifiers, coordinates, or feed credentials.
-  dashboard_integration:
-    name: Enable dashboard integration
-    description: >-
-      Install the bundled Aircraft Bridge integration and card automatically.
-      Save and restart this App, then restart Home Assistant Core after first
-      install or upgrade. Add Aircraft Bridge in Devices & services, select
-      this instance, refresh your browser and choose Aircraft Bridge in the
-      dashboard card picker. No file copying, YAML or exposed LAN port required.
-  density_legacy_source:
-    name: Original source of existing density history
-    description: >-
-      For upgrades from v0.6.0–v0.6.2, explicitly identify the source that
-      collected the old untagged history. Leave unassigned when there is no
-      legacy history. History is preserved and density collection pauses
-      until attribution; new history is separated by selected source.
   source:
     name: Input source
-    description: "Choose exactly one aircraft source: SBS/BaseStation TCP (recommended for FR24 receivers), FR24 flights.js, a standard dump1090/readsb aircraft.json URL, or FAA SWIM TFMS/SFDPS (local view only; dump1090 output disabled)."
-  aircraft_json_url:
-    name: aircraft.json URL
-    description: Full HTTP or HTTPS URL to a standard dump1090/readsb aircraft.json feed; required only for aircraft_json mode.
-  aircraft_json_poll_interval:
-    name: aircraft.json poll interval
-    description: Seconds between polls when using aircraft_json mode.
+    description: For an FR24 receiver, leave sbs_30003 selected and enter its IP address below. Choose
+      another source only when needed.
   receiver_host:
-    name: FR24 receiver host
-    description: IP address or hostname of the local Flightradar24 receiver.
-  sbs_port:
-    name: SBS/BaseStation port
-    description: TCP port for the receiver's local SBS/BaseStation feed (normally 30003).
-  receiver_port:
-    name: FR24 HTTP port
-    description: HTTP port used by flights.js mode (normally 80).
-  username:
-    name: Receiver username
-    description: Username for HTTP Digest authentication; required only for flights.js mode.
-  password:
-    name: Receiver password
-    description: Password for HTTP Digest authentication; required only for flights.js mode.
-  poll_interval:
-    name: flights.js poll interval
-    description: Seconds between receiver polls when using flights.js mode.
-  request_timeout:
-    name: HTTP request timeout
-    description: Maximum seconds to wait for each HTTP request attempt in flights.js mode.
+    name: Receiver IP address or hostname
+    description: Required for an FR24 receiver; for example 192.168.0.165. SBS uses port 30003 by default.
   destination_airport:
-    name: Origin/destination airport highlight
-    description: >-
-      Airport code for origin/destination highlighting: IATA such as SYR for tracker routes, ICAO such as KSYR for US TFMS/SFDPS routes.
-  swim_product:
-    name: FAA SWIM product
-    description: Legacy product selector; the selected input source chooses TFMS or SFDPS automatically.
-  swim_host:
-    name: SWIM broker host
-    description: Secure Solace broker host supplied with the FAA SWIM subscription.
-  swim_vpn:
-    name: SWIM VPN
-    description: Solace message VPN supplied with the FAA SWIM subscription.
+    name: Highlight flights to/from this airport
+    description: Optional airport code, such as SYR or KSYR. Leave blank for no airport highlighting.
+  personalization:
+    name: Personalization
+    description: Optional map appearance and Home Assistant dashboard integration.
+    fields:
+      map_theme:
+        name: Map theme
+        description: Default palette for new map pages. The map toolbar also changes it immediately.
+      dashboard_integration:
+        name: Enable dashboard integration
+        description: Install the Aircraft Bridge integration and card. Restart Home Assistant Core after
+          first enabling it.
+  integrations:
+    name: Integrations
+    description: Optional ADSBTracker route enrichment.
+    fields:
+      enrichment_source:
+        name: Route enrichment
+        description: Use ADSBTracker metadata, or choose none when ADSBTracker is not installed.
+  additional_feeds:
+    name: Additional local feeds
+    description: Only for aircraft_json or legacy flights_js input. SBS receivers need none of these fields.
+    fields:
+      aircraft_json_url:
+        name: aircraft.json URL
+        description: Full HTTP or HTTPS URL to a standard dump1090/readsb aircraft.json feed; required
+          only for aircraft_json mode.
+      username:
+        name: Receiver username
+        description: Username for HTTP Digest authentication; required only for flights.js mode.
+      password:
+        name: Receiver password
+        description: Password for HTTP Digest authentication; required only for flights.js mode.
+      receiver_port:
+        name: FR24 HTTP port
+        description: HTTP port used by flights.js mode (normally 80).
+  faa_swim:
+    name: FAA SWIM
+    description: Only for swim_sfdps or swim_tfms input. Enter the connection details supplied with your
+      FAA subscription; the input source selects the product automatically.
+    fields:
+      swim_host:
+        name: SWIM broker host
+        description: Secure Solace broker host supplied with the FAA SWIM subscription.
+      swim_vpn:
+        name: SWIM VPN
+        description: Solace message VPN supplied with the FAA SWIM subscription.
+      swim_username:
+        name: SWIM subscription username
+        description: Username supplied for the FAA SWIM subscription.
+      swim_password:
+        name: SWIM subscription password
+        description: Password supplied for the FAA SWIM subscription.
+      swim_queue:
+        name: SWIM queue / JMS name
+        description: Durable queue or JMS name supplied for the selected FAA SWIM feed.
+      swim_radius_nm:
+        name: SWIM geographic radius
+        description: Retain FAA observed positions within this many nautical miles of Home Assistant Home.
+  advanced:
+    name: Developer / troubleshooting
+    description: Normally leave these defaults. External history, recording, logs, network access, timing,
+      entity overrides and legacy migration settings.
+    fields:
+      history_url:
+        name: External developer history URL
+        description: Optional external history API. Built-in trails and history export do not require
+          this URL.
+      development_recording:
+        name: Show development recording controls
+        description: Show the experimental recording panel on the map. Hiding it does not stop an existing
+          recording.
+      verbose_logging:
+        name: Verbose diagnostic logging
+        description: Enable additional motion and density diagnostics.
+      trusted_networks:
+        name: Trusted client networks
+        description: Comma-separated CIDR networks allowed to access the app; normally leave the default.
+      sbs_port:
+        name: SBS/BaseStation port
+        description: TCP port for the receiver's local SBS/BaseStation feed (normally 30003).
+      poll_interval:
+        name: flights.js poll interval
+        description: Seconds between receiver polls when using flights.js mode.
+      request_timeout:
+        name: HTTP request timeout
+        description: Maximum seconds to wait for each HTTP request attempt in flights.js mode.
+      aircraft_json_poll_interval:
+        name: aircraft.json poll interval
+        description: Seconds between polls when using aircraft_json mode.
+      tracker_aircraft_entity:
+        name: Tracker aggregate aircraft sensor
+        description: Exact Home Assistant entity ID. Default sensor.adsb_all_aircraft; select the matching
+          Tracker instance when IDs have suffixes. Save and restart the App.
+      tracker_closest_entity:
+        name: Tracker closest aircraft sensor
+        description: Exact Home Assistant entity ID. Default sensor.adsb_closest_aircraft; select the
+          matching Tracker instance when IDs have suffixes. Save and restart the App.
+      tracker_military_entity:
+        name: Tracker military aircraft sensor
+        description: Exact Home Assistant entity ID. Default sensor.adsb_military_aircraft_details; select
+          the matching Tracker instance when IDs have suffixes. Save and restart the App.
+      swim_aircraft_timeout:
+        name: SWIM aircraft timeout
+        description: Seconds without an accepted FAA position before removing an aircraft from the current
+          snapshot.
+      swim_retry_count:
+        name: SWIM connection retry count
+        description: Number of Solace reconnection attempts.
+      swim_retry_interval_ms:
+        name: SWIM retry interval (ms)
+        description: Delay between Solace reconnection attempts.
+      density_legacy_source:
+        name: Legacy density source migration
+        description: Only for unassigned density imported from v0.6.0–v0.6.2. Normally leave unassigned.
+  verbose_logging:
+    name: Legacy setting — Verbose diagnostic logging
+    description: Enable additional motion and density diagnostics.
+  request_timeout:
+    name: Legacy setting — HTTP request timeout
+    description: Maximum seconds to wait for each HTTP request attempt in flights.js mode.
   swim_username:
-    name: SWIM subscription username
+    name: Legacy setting — SWIM subscription username
     description: Username supplied for the FAA SWIM subscription.
+  poll_interval:
+    name: Legacy setting — flights.js poll interval
+    description: Seconds between receiver polls when using flights.js mode.
+  swim_host:
+    name: Legacy setting — SWIM broker host
+    description: Secure Solace broker host supplied with the FAA SWIM subscription.
+  map_theme:
+    name: Legacy setting — Map theme
+    description: Default palette for new map pages. The map toolbar also changes it immediately.
+  dashboard_integration:
+    name: Legacy setting — Enable dashboard integration
+    description: Install the Aircraft Bridge integration and card. Restart Home Assistant Core after first
+      enabling it.
+  receiver_port:
+    name: Legacy setting — FR24 HTTP port
+    description: HTTP port used by flights.js mode (normally 80).
+  density_legacy_source:
+    name: Legacy setting — Legacy density source migration
+    description: Only for unassigned density imported from v0.6.0–v0.6.2. Normally leave unassigned.
+  aircraft_json_url:
+    name: Legacy setting — aircraft.json URL
+    description: Full HTTP or HTTPS URL to a standard dump1090/readsb aircraft.json feed; required only
+      for aircraft_json mode.
+  password:
+    name: Legacy setting — Receiver password
+    description: Password for HTTP Digest authentication; required only for flights.js mode.
   swim_password:
-    name: SWIM subscription password
+    name: Legacy setting — SWIM subscription password
     description: Password supplied for the FAA SWIM subscription.
-  swim_queue:
-    name: SWIM queue / JMS name
-    description: Durable queue or JMS name supplied for the selected FAA SWIM feed.
+  sbs_port:
+    name: Legacy setting — SBS/BaseStation port
+    description: TCP port for the receiver's local SBS/BaseStation feed (normally 30003).
+  username:
+    name: Legacy setting — Receiver username
+    description: Username for HTTP Digest authentication; required only for flights.js mode.
   swim_radius_nm:
-    name: SWIM geographic radius
+    name: Legacy setting — SWIM geographic radius
     description: Retain FAA observed positions within this many nautical miles of Home Assistant Home.
-  swim_aircraft_timeout:
-    name: SWIM aircraft timeout
-    description: Seconds without an accepted FAA position before removing an aircraft from the current snapshot.
-  enrichment_source:
-    name: Route enrichment source
-    description: Use ADSB Tracker route metadata or disable enrichment.
-  history_url:
-    name: Developer track history URL
-    description: Optional developer-only API base URL. Contact the author for the API description.
-  swim_retry_count:
-    name: SWIM connection retry count
-    description: Number of Solace reconnection attempts.
   swim_retry_interval_ms:
-    name: SWIM retry interval (ms)
+    name: Legacy setting — SWIM retry interval (ms)
     description: Delay between Solace reconnection attempts.
   tracker_aircraft_entity:
-    name: Tracker aggregate aircraft sensor
-    description: "Exact Home Assistant entity ID. Default sensor.adsb_all_aircraft; select the matching Tracker instance when IDs have suffixes. Save and restart the App."
-  tracker_closest_entity:
-    name: Tracker closest aircraft sensor
-    description: "Exact Home Assistant entity ID. Default sensor.adsb_closest_aircraft; select the matching Tracker instance when IDs have suffixes. Save and restart the App."
+    name: Legacy setting — Tracker aggregate aircraft sensor
+    description: Exact Home Assistant entity ID. Default sensor.adsb_all_aircraft; select the matching
+      Tracker instance when IDs have suffixes. Save and restart the App.
+  swim_aircraft_timeout:
+    name: Legacy setting — SWIM aircraft timeout
+    description: Seconds without an accepted FAA position before removing an aircraft from the current
+      snapshot.
+  swim_retry_count:
+    name: Legacy setting — SWIM connection retry count
+    description: Number of Solace reconnection attempts.
+  enrichment_source:
+    name: Legacy setting — Route enrichment
+    description: Use ADSBTracker metadata, or choose none when ADSBTracker is not installed.
+  swim_vpn:
+    name: Legacy setting — SWIM VPN
+    description: Solace message VPN supplied with the FAA SWIM subscription.
+  history_url:
+    name: Legacy setting — External developer history URL
+    description: Optional external history API. Built-in trails and history export do not require this
+      URL.
+  trusted_networks:
+    name: Legacy setting — Trusted client networks
+    description: Comma-separated CIDR networks allowed to access the app; normally leave the default.
+  swim_queue:
+    name: Legacy setting — SWIM queue / JMS name
+    description: Durable queue or JMS name supplied for the selected FAA SWIM feed.
+  development_recording:
+    name: Legacy setting — Show development recording controls
+    description: Show the experimental recording panel on the map. Hiding it does not stop an existing
+      recording.
   tracker_military_entity:
-    name: Tracker military aircraft sensor
-    description: "Exact Home Assistant entity ID. Default sensor.adsb_military_aircraft_details; select the matching Tracker instance when IDs have suffixes. Save and restart the App."
+    name: Legacy setting — Tracker military aircraft sensor
+    description: Exact Home Assistant entity ID. Default sensor.adsb_military_aircraft_details; select
+      the matching Tracker instance when IDs have suffixes. Save and restart the App.
+  tracker_closest_entity:
+    name: Legacy setting — Tracker closest aircraft sensor
+    description: Exact Home Assistant entity ID. Default sensor.adsb_closest_aircraft; select the matching
+      Tracker instance when IDs have suffixes. Save and restart the App.
+  aircraft_json_poll_interval:
+    name: Legacy setting — aircraft.json poll interval
+    description: Seconds between polls when using aircraft_json mode.
+  swim_product:
+    name: Legacy setting — FAA SWIM product
+    description: Legacy product selector; the selected input source chooses TFMS or SFDPS automatically.
 network:
   8085/tcp: FR24 dump1090/readsb-compatible HTTP service

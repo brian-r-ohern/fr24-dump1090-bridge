@@ -1,5 +1,15 @@
 > **Before installing an update, press Ctrl+Shift+R to refresh this page.**
 
+## v0.7.3 — usability, history and reliability
+
+- Selected aircraft show a reported-destination × and dashed line that persist after popup closure and update with the aircraft until another track is selected.
+- Cyan rings highlight projected passes within 3 NM slant range of Home in the next five minutes. A separate purple dashed halo marks fresh aircraft currently within 0.3333 NM horizontally, at any altitude. Both controls are under Motion.
+- Qualifying local routes retain up to 24 hours of observed sampled history on disk; other traffic keeps a rolling hour. Both reported airports must be covered, with observations within 10 NM of an endpoint. Export all combines both stores. Collection gaps and late acquisition can leave incomplete trips.
+- Configuration groups separate basic setup, personalization, integrations, additional local feeds, FAA SWIM and developer/troubleshooting options. Existing flat settings migrate with compatibility support.
+- Expanded popup facets survive SBS and other supported feed updates. Experimental day recording is hidden unless enabled in Developer / troubleshooting.
+
+Home predictions use constant observed velocity and approximate altitude references; they describe geometry, not intent or operational separation. Automatic FAA feed bridging remains disabled.
+
 # FR24 dump1090 Bridge — Home Assistant App
 
 **Version 0.7.2** — Aircraft motion geometry, local analytical history and proximity analysis.

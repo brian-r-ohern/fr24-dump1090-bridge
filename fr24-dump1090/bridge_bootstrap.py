@@ -4,7 +4,7 @@ import signal
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from bridge_settings import VERSION, checked_options, read_options, save_snapshot, settings_page, settings_post
+from bridge_settings import VERSION, checked_options, read_options, save_snapshot, settings_page, settings_post, migrate_options
 
 
 class RecoveryHandler(BaseHTTPRequestHandler):
@@ -38,6 +38,10 @@ class RecoveryHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    try:
+        if migrate_options():print('[INFO] App configuration organized into sections; refresh the Configuration page.',flush=True)
+    except Exception:
+        print('[WARN] Configuration layout migration deferred; compatible settings remain in use.',flush=True)
     from dashboard_install import configure_dashboard
     try:
         configure_dashboard(read_options())

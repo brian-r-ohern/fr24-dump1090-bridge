@@ -1,18 +1,14 @@
 > **Before installing an update, press Ctrl+Shift+R to refresh this page.**
 
-## v0.7.2 operational changes
+## v0.7.3 — usability, history and reliability
 
-Selected/all history downloads use `.geojson.gz`; decompress for QGIS. Full
-analytical records remain in `properties.record`. Selected filenames identify
-reported ICAO or local track ID. History retains up to one hour and clears on restart.
-Proximity lists up to ten aircraft within 10 NM horizontally, sorted by slant
-range when compatible altitude is available. Closure and CPA are horizontal;
-CPA/TCPA uses a five-minute constant-velocity model.
-Destination movement reads Moving toward / Moving away; near-neutral movement
-reads Little change in distance. Destination metadata age is unknown.
-Deliberate local FAA history/density/envelope downloads are enabled; automatic
-FAA aircraft-feed bridging remains disabled. These rules supersede historical
-restrictions in older development notes.
+- Selected aircraft show a reported-destination × and dashed line that persist after popup closure and update with the aircraft until another track is selected.
+- Cyan rings highlight projected passes within 3 NM slant range of Home in the next five minutes. A separate purple dashed halo marks fresh aircraft currently within 0.3333 NM horizontally, at any altitude. Both controls are under Motion.
+- Qualifying local routes retain up to 24 hours of observed sampled history on disk; other traffic keeps a rolling hour. Both reported airports must be covered, with observations within 10 NM of an endpoint. Export all combines both stores. Collection gaps and late acquisition can leave incomplete trips.
+- Configuration groups separate basic setup, personalization, integrations, additional local feeds, FAA SWIM and developer/troubleshooting options. Existing flat settings migrate with compatibility support.
+- Expanded popup facets survive SBS and other supported feed updates. Experimental day recording is hidden unless enabled in Developer / troubleshooting.
+
+Home predictions use constant observed velocity and approximate altitude references; they describe geometry, not intent or operational separation. Automatic FAA feed bridging remains disabled.
 
 # FR24 dump1090 Bridge — Home Assistant
 
@@ -333,3 +329,18 @@ History buttons now export selected/all retained aircraft as JSON.gz. Density ba
 ## v0.7.2-dev.7 — SBS recovery and selected proximity preview
 
 The selected-aircraft proximity/CPA preview has been brought forward from the later roadmap milestone for evaluation. It does not complete all-pairs encounter detection. See [exact rules and validation](../docs/v0.7.2-dev.7-testing.md) for source-time alignment, altitude reference gates, bounded horizon, model quality, UI, endpoint and replay behavior. SBS byte-idle recovery reconnects silent sessions after 60 seconds.
+
+
+## Development preview: 24-hour recording
+
+Enable development recording visibility under **Developer / troubleshooting**, then expand **Map controls → Development recording**, then select **Start 24-hour recording**. The recorder is off by default. Controls show the original session deadline, retained snapshots and positioned samples, queue/disk usage, losses, process RSS, and estimated one-hour history RAM.
+
+**Export recorded day** downloads compressed GeoJSON for GIS. **Export replay snapshots** downloads compressed JSONL for local offline motion-model replay. These are deliberate trusted-network downloads, including in FAA local-view mode; existing FAA bridge/feed endpoints remain disabled. Input is the normalized source collection snapshot, not every raw SBS message or Solace envelope. It is captured before the history sampler. Neither export substitutes inferred landing events or fills observation gaps.
+
+A session lasts up to 24 hours and resumes after restart until its original deadline. Its completed window remains available for later download; starting a subsequent session advances the window. Stop can end collection early. Source-specific SQLite files are in `/data/aircraft-recording/`. The default storage limit is 2 GiB per source, including SQLite sidecars, plus a 64 MiB minimum free-space check. Storage checks occur per snapshot; a snapshot/transaction can exceed the ceiling slightly. `FR24_RECORDING_PATH` and `FR24_RECORDING_MAX_BYTES` environment overrides are available for development deployments. Queue bounds are 128 snapshots and 16 MiB of serialized input. Recording faults stop or drop recording input with diagnostics, independently of the live feed.
+
+`GET /recording` exposes diagnostics. `POST /recording/start` and `POST /recording/stop` require `application/json` bodies, such as `{}`. `GET /recording/export?download=1&format=geojson` or `format=jsonl` creates an explicit download. Export reads stream from a stable SQLite transaction to a temporary gzip file; large exports may take time before the download begins and need temporary free space. The temporary file is removed after the response.
+
+Resource samples are retained once per minute when input snapshots arrive. History RAM is an estimate based on container sizes and up to 128 latest per-track samples; shared objects can be counted repeatedly. Process RSS includes the whole app. Disk bytes include database/WAL/SHM and may fluctuate with checkpointing. These measures are not interchangeable with gzip export size.
+
+This preview measures the real cost of longer retention. The live map's existing one-hour trail and Export all remain one-hour views; 24-hour active-track RAM retention and prior-motion highlighting are subsequent work.

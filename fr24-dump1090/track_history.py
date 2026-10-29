@@ -5,6 +5,7 @@ import copy
 import ipaddress
 import threading
 import time
+import sys
 from motion_state import number, timestamp, leg, KNOT_MPS
 
 DEFAULT_NETWORKS='127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7'
@@ -17,15 +18,19 @@ def allowed_peer(peer, networks=DEFAULT_NETWORKS):
     except ValueError:return False
 
 class TrackHistory:
-    def __init__(self,source,clock=time.time):
+    def __init__(self,source,clock=time.time,*,sample_interval=10,max_samples=360,history_seconds=3600,return_rows=False):
         self.source,self.clock=source,clock
+        self.sample_interval,self.max_samples,self.history_seconds=sample_interval,max_samples,history_seconds
+        self._resource_cache=None
+        self.return_rows=return_rows
         self.lock=threading.RLock();self.tracks=OrderedDict()
     def prune(self,now):
         for key,track in list(self.tracks.items()):
-            while track['samples'] and now-track['samples'][0]['t']>3600:track['samples'].popleft()
+            while track['samples'] and now-track['samples'][0]['t']>self.history_seconds:track['samples'].popleft()
             if not track['samples']:del self.tracks[key]
     def observe(self,aircraft,received,source_now=None,metadata=None):
         metadata=metadata or {};source_now=number(source_now) or received
+        accepted=[]
         with self.lock:
             self.prune(received)
             for ac in aircraft:
@@ -37,13 +42,13 @@ class TrackHistory:
                 if self.source=='swim_sfdps' and explicit is None:continue
                 age=number(ac.get('seen_pos'))
                 t=explicit if explicit is not None else source_now-age if age is not None and age>=0 else received
-                if t<=0 or t>received+5 or received-t>3600:continue
+                if t<=0 or t>received+5 or received-t>self.history_seconds:continue
                 track=self.tracks.get(key)
                 if track is None:
                     if len(self.tracks)>=1024:self.tracks.popitem(last=False)
-                    track={'samples':deque(maxlen=360),'segment':1,'identity':{}};self.tracks[key]=track
+                    track={'samples':deque(maxlen=self.max_samples),'segment':1,'identity':{}};self.tracks[key]=track
                 points=track['samples'];prev=points[-1] if points else None
-                if prev and (t<=prev['t'] or (t-prev['t']<10)):continue
+                if prev and (t<=prev['t'] or (t-prev['t']<self.sample_interval)):continue
                 if prev and explicit is None and age is None and lat==prev['lat'] and lon==prev['lon']:continue
                 reason=None
                 if prev:
@@ -61,6 +66,8 @@ class TrackHistory:
                 points.append(row)
                 track['identity'].update({k:ac[k] for k in ('flight','registration','aircraft_type','origin','destination','route_origin','route_destination','icao_address','aircraft_category') if ac.get(k) is not None})
                 self.tracks.move_to_end(key)
+                if self.return_rows:accepted.append((key,dict(track['identity']),row))
+        return accepted
     def resolve_hex(self,hex_code):
         with self.lock:
             self.prune(self.clock())
@@ -111,3 +118,28 @@ class TrackHistory:
                 rows[-1]['motion']={f:copy.deepcopy(latest.get(f,[])) for f in ('patterns','primitives')}
                 tracks[key]={'identity':dict(track['identity']),'samples':rows}
             return {'source':self.source,'generated_at':now,'tracks':tracks}
+
+    def resource_status(self):
+        """Bounded sample estimate, cached for 60s; not an allocator/RSS measurement."""
+        now=self.clock()
+        with self.lock:
+            if self._resource_cache and now-self._resource_cache['measured_at']<60:return dict(self._resource_cache)
+            self.prune(now)
+            rows=[];count=0;oldest=None;newest=None;containers=sys.getsizeof(self.tracks)
+            for track in self.tracks.values():
+                points=track['samples'];count+=len(points);containers+=sys.getsizeof(track)+sys.getsizeof(points)
+                if points:
+                    oldest=points[0]['t'] if oldest is None else min(oldest,points[0]['t'])
+                    newest=points[-1]['t'] if newest is None else max(newest,points[-1]['t'])
+                    if len(rows)<128:rows.append(points[-1])
+            def deep_size(obj,seen):
+                if id(obj) in seen:return 0
+                seen.add(id(obj));n=sys.getsizeof(obj)
+                if isinstance(obj,dict):n+=sum(deep_size(k,seen)+deep_size(v,seen) for k,v in obj.items())
+                elif isinstance(obj,(list,tuple,deque)):n+=sum(deep_size(v,seen) for v in obj)
+                return n
+            average=sum(deep_size(row,set()) for row in rows)/len(rows) if rows else 0
+            self._resource_cache={'measured_at':now,'retained_aircraft':len(self.tracks),'retained_samples':count,
+                'oldest_position_time':oldest,'newest_position_time':newest,'history_seconds':self.history_seconds,
+                'estimated_memory_bytes':round(containers+average*count),'estimate_method':'container sizes plus mean of up to 128 latest per-track samples; shared objects may be counted repeatedly'}
+            return dict(self._resource_cache)
