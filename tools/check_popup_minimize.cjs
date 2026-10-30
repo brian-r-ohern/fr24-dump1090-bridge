@@ -1,0 +1,10 @@
+const fs=require('fs'),assert=require('assert');
+const source=fs.readFileSync(process.argv[2],'utf8');
+const popup=source.slice(source.indexOf('function popup(ac,flags,key,orientation)'),source.indexOf('function aircraftIconSize('));
+assert(popup.includes('data-popup-section="aircraft-popup" open'));
+assert(popup.includes('ac-compact-destination'));
+assert(popup.includes('</div></div></details>'));
+assert(source.includes('state.set(detail.dataset.popupSection,detail.open)'));
+assert(source.includes('detail.open=state.get(detail.dataset.popupSection)'));
+for(const name of ['sbs_30003','aircraft_json','swim_sfdps'])assert(source.includes(name));
+console.log('PASS shared popup minimize markup and refresh-state restoration');
